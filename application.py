@@ -249,4 +249,4 @@ def index():
     return "Hello, World!"
 
 if __name__ == "__main__":
-    application.run(debug=True)
+    application.run()
