@@ -27,6 +27,77 @@ class AWSService:
         )
         
         self.bucket_name = 'smartreferralhub-bucket'
+        self.users_table = 'smart-referral-users'
+        self.links_table = 'smart-referral-links'
+
+        # Create tables if they don't exist
+        self._create_users_table_if_not_exists()
+        self._create_links_table_if_not_exists()
+
+    def _create_users_table_if_not_exists(self):
+        """Create the users table if it doesn't exist"""
+        try:
+            self.dynamodb.describe_table(TableName=self.users_table)
+        except self.dynamodb.exceptions.ResourceNotFoundException:
+            print(f"Creating users table: {self.users_table}")
+            self.dynamodb.create_table(
+                TableName=self.users_table,
+                KeySchema=[
+                    {'AttributeName': 'email', 'KeyType': 'HASH'}
+                ],
+                AttributeDefinitions=[
+                    {'AttributeName': 'email', 'AttributeType': 'S'},
+                    {'AttributeName': 'name', 'AttributeType': 'S'}
+                ],
+                ProvisionedThroughput={
+                    'ReadCapacityUnits': 5,
+                    'WriteCapacityUnits': 5
+                }
+            )
+            # Wait for the table to be created
+            waiter = self.dynamodb.get_waiter('table_exists')
+            waiter.wait(TableName=self.users_table)
+            print(f"Users table created: {self.users_table}")
+
+    def _create_links_table_if_not_exists(self):
+        """Create the links table if it doesn't exist"""
+        try:
+            self.dynamodb.describe_table(TableName=self.links_table)
+        except self.dynamodb.exceptions.ResourceNotFoundException:
+            print(f"Creating links table: {self.links_table}")
+            self.dynamodb.create_table(
+                TableName=self.links_table,
+                KeySchema=[
+                    {'AttributeName': 'id', 'KeyType': 'HASH'}
+                ],
+                AttributeDefinitions=[
+                    {'AttributeName': 'id', 'AttributeType': 'S'},
+                    {'AttributeName': 'step_name', 'AttributeType': 'S'}
+                ],
+                GlobalSecondaryIndexes=[
+                    {
+                        'IndexName': 'StepNameIndex',
+                        'KeySchema': [
+                            {'AttributeName': 'step_name', 'KeyType': 'HASH'}
+                        ],
+                        'Projection': {
+                            'ProjectionType': 'ALL'
+                        },
+                        'ProvisionedThroughput': {
+                            'ReadCapacityUnits': 5,
+                            'WriteCapacityUnits': 5
+                        }
+                    }
+                ],
+                ProvisionedThroughput={
+                    'ReadCapacityUnits': 5,
+                    'WriteCapacityUnits': 5
+                }
+            )
+            # Wait for the table to be created
+            waiter = self.dynamodb.get_waiter('table_exists')
+            waiter.wait(TableName=self.links_table)
+            print(f"Links table created: {self.links_table}")
 
     def generate_file_name(self, file_type: str) -> str:
         """Generate a unique file name with timestamp and random number"""
@@ -63,7 +134,7 @@ class AWSService:
         """Get user from DynamoDB"""
         try:
             response = self.dynamodb.get_item(
-                TableName='users',
+                TableName=self.users_table,
                 Key={'email': {'S': email}}
             )
             return response.get('Item')
@@ -71,18 +142,20 @@ class AWSService:
             print(f"Error getting user: {str(e)}")
             return None
 
-    def create_user(self, email: str, password: str) -> bool:
+    def create_user(self, email: str, password: str, name: str):
         """Create a new user in DynamoDB"""
         try:
-            password_hash = generate_password_hash(password)
+            hashed_password = generate_password_hash(password)
+            
             self.dynamodb.put_item(
-                TableName='users',
+                TableName=self.users_table,
                 Item={
                     'email': {'S': email},
-                    'password': {'S': password_hash},
+                    'password': {'S': hashed_password},
+                    'name': {'S': name},
                     'friends': {'L': []},
                     'terms_accepted': {'BOOL': False},
-                    'created_at': {'N': str(int(datetime.now().timestamp()))}
+                    'created_at': {'S': datetime.utcnow().isoformat()}
                 }
             )
             return True
@@ -106,7 +179,7 @@ class AWSService:
                 dynamo_friends.append(dynamo_friend)
 
             self.dynamodb.update_item(
-                TableName='users',
+                TableName=self.users_table,
                 Key={'email': {'S': email}},
                 UpdateExpression='SET friends = :friends',
                 ExpressionAttributeValues={
@@ -122,7 +195,7 @@ class AWSService:
         """Update user's terms acceptance status"""
         try:
             self.dynamodb.update_item(
-                TableName='users',
+                TableName=self.users_table,
                 Key={'email': {'S': email}},
                 UpdateExpression='SET terms_accepted = :accepted',
                 ExpressionAttributeValues={
@@ -138,7 +211,7 @@ class AWSService:
         """Check if user has accepted terms"""
         try:
             response = self.dynamodb.get_item(
-                TableName='users',
+                TableName=self.users_table,
                 Key={'email': {'S': email}},
                 ProjectionExpression='terms_accepted'
             )
@@ -148,3 +221,116 @@ class AWSService:
         except Exception as e:
             print(f"Error checking terms acceptance: {str(e)}")
             return False
+
+    def get_links_by_step(self, step_name: str):
+        """Get all links for a specific step"""
+        try:
+            response = self.dynamodb.query(
+                TableName=self.links_table,
+                IndexName='StepNameIndex',
+                KeyConditionExpression='step_name = :step_name',
+                ExpressionAttributeValues={
+                    ':step_name': {'S': step_name}
+                }
+            )
+            return response.get('Items', [])
+        except Exception as e:
+            print(f"Error getting links: {str(e)}")
+            return []
+
+    def update_link(self, step_name: str, platform: str, new_link: str):
+        """Update a specific link"""
+        try:
+            self.dynamodb.update_item(
+                TableName=self.links_table,
+                Key={
+                    'id': {'S': f"{step_name}#{platform}"}
+                },
+                UpdateExpression='SET #link = :link',
+                ExpressionAttributeNames={
+                    '#link': 'link'
+                },
+                ExpressionAttributeValues={
+                    ':link': {'S': new_link}
+                }
+            )
+            return True
+        except Exception as e:
+            print(f"Error updating link: {str(e)}")
+            return False
+
+    def get_all_clients(self):
+        """Get all clients and their media from DynamoDB and S3"""
+        try:
+            # Scan the users table to get all users
+            response = self.dynamodb.scan(
+                TableName=self.users_table,
+                ProjectionExpression="email, #n, friends, terms_accepted",
+                ExpressionAttributeNames={'#n': 'name'}
+            )
+            
+            clients = []
+            for item in response.get('Items', []):
+                client = {
+                    'email': item.get('email', {}).get('S', ''),
+                    'name': item.get('name', {}).get('S', ''),
+                    'terms_accepted': item.get('terms_accepted', {}).get('BOOL', False),
+                    'friends': [],
+                    'media': {}
+                }
+                
+                # Convert DynamoDB friends list to Python list
+                if 'friends' in item and 'L' in item['friends']:
+                    client['friends'] = [
+                        {
+                            'name': friend_item['M']['name']['S'],
+                            'phone': friend_item['M']['phone']['S'],
+                            'email': friend_item['M']['email']['S']
+                        }
+                        for friend_item in item['friends']['L']
+                    ]
+                
+                # List objects in S3 for this user's email
+                try:
+                    s3_response = self.s3_client.list_objects_v2(
+                        Bucket=self.bucket_name,
+                        Prefix=f"{client['email']}/"
+                    )
+                    
+                    # Group media by step
+                    for obj in s3_response.get('Contents', []):
+                        key_parts = obj['Key'].split('/')
+                        if len(key_parts) >= 3:  # email/step_name/filename
+                            step_name = key_parts[1]
+                            filename = key_parts[2]
+                            
+                            if step_name not in client['media']:
+                                client['media'][step_name] = []
+                                
+                            # Generate pre-signed URL for the media file
+                            url = self.s3_client.generate_presigned_url(
+                                'get_object',
+                                Params={
+                                    'Bucket': self.bucket_name,
+                                    'Key': obj['Key']
+                                },
+                                ExpiresIn=3600  # URL expires in 1 hour
+                            )
+                            
+                            client['media'][step_name].append({
+                                'filename': filename,
+                                'url': url,
+                                'uploaded_at': obj['LastModified'].isoformat()
+                            })
+                            
+                except self.s3_client.exceptions.NoSuchKey:
+                    # No media files found for this user
+                    pass
+                
+                clients.append(client)
+            
+            return clients
+            
+        except Exception as e:
+            print(f"Error getting clients: {str(e)}")
+            raise e
