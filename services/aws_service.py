@@ -137,18 +137,52 @@ class AWSService:
     
     def get_post_image(self):
         try:
-            # get predesigned url for admin/post/post.png 
-            response = self.s3_client.generate_presigned_url(
+            # Generate a clean download URL instead of direct S3 URL
+            key = 'admin/post/post.png'
+            if not self.check_file_exists(key):
+                return None
+                
+            # Return a clean API endpoint URL instead of S3 URL
+            return f"/media/download/{self.encode_key(key)}"
+            
+        except Exception as e:
+            print(f"Error getting post image: {str(e)}")
+            return None
+            
+    def check_file_exists(self, key: str):
+        """Check if a file exists in S3"""
+        try:
+            self.s3_client.head_object(Bucket=self.bucket_name, Key=key)
+            return True
+        except:
+            return False
+            
+    def encode_key(self, key: str) -> str:
+        """Encode the S3 key to a URL-safe string"""
+        import base64
+        return base64.urlsafe_b64encode(key.encode()).decode()
+        
+    def decode_key(self, encoded_key: str) -> str:
+        """Decode the URL-safe string back to S3 key"""
+        import base64
+        return base64.urlsafe_b64decode(encoded_key.encode()).decode()
+        
+    def get_download_url(self, encoded_key: str):
+        """Generate a pre-signed URL for downloading"""
+        try:
+            key = self.decode_key(encoded_key)
+            url = self.s3_client.generate_presigned_url(
                 'get_object',
                 Params={
                     'Bucket': self.bucket_name,
-                    'Key': 'admin/post/post.png'
+                    'Key': key,
+                    'ResponseContentDisposition': 'attachment'
                 },
-                ExpiresIn=3600
+                ExpiresIn=300  # URL expires in 5 minutes
             )
-            return response
+            return url
         except Exception as e:
-            print(f"Error getting post image: {str(e)}")
+            print(f"Error generating download URL: {str(e)}")
             return None
 
     def get_user(self, email: str):

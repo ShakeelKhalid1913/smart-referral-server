@@ -1,5 +1,5 @@
 import os
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, redirect
 from flask_cors import CORS
 from werkzeug.security import check_password_hash
 import json
@@ -384,6 +384,19 @@ def posttags():
             "media": media_url
         }), 200
         
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@application.route('/api/media/download/<encoded_key>')
+def download_media(encoded_key):
+    try:
+        # Get the download URL from S3
+        url = aws_service.get_download_url(encoded_key)
+        if not url:
+            return jsonify({"error": "File not found"}), 404
+            
+        # Redirect to the pre-signed URL
+        return redirect(url)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
