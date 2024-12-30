@@ -2,6 +2,7 @@ import os
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from werkzeug.security import check_password_hash
+import json
 
 from utils.auth import generate_token, login_required, get_user_from_request
 from services.aws_service import AWSService
@@ -307,7 +308,84 @@ def get_all_clients():
     except Exception as e:
         print(f"Error getting clients: {str(e)}")
         return jsonify({"error": "Failed to get clients"}), 500
+    
+@application.route('/api/percentage', methods=['GET', 'PUT'])
+def percentage():
+    filename = 'data/percentage.txt'
+    if request.method == 'PUT':
+        data = request.get_json()
+        percentage = data.get('percentage')
+        with open(filename, 'w') as f:
+            f.write(str(percentage))
+        return jsonify({"message": "Percentage updated successfully"}), 200
+    
+    with open(filename, 'r') as f:
+        percentage = f.read()
+    return jsonify({"percentage": percentage}), 200
 
+@application.route('/api/posttags', methods=['GET', 'PUT'])
+def posttags():
+    filename = 'data/hashtags.txt'
+    
+    if request.method == 'PUT':
+        try:
+            # Handle file upload
+            file = request.files.get('media')
+            if not file:
+                return jsonify({"error": "No media file provided"}), 400
+
+            # Get hashtags from form data
+            hashtags_json = request.form.get('hashtags')
+            if not hashtags_json:
+                return jsonify({"error": "No hashtags provided"}), 400
+
+            try:
+                hashtags = json.loads(hashtags_json)
+            except json.JSONDecodeError:
+                return jsonify({"error": "Invalid hashtags format"}), 400
+
+            # Save hashtags
+            with open(filename, 'w') as f:
+                f.write('\n'.join(hashtags))
+
+            # Upload file to S3
+            url, original_name = aws_service.upload_file_to_s3(
+                file,
+                'media',
+                'admin'
+            )
+            
+            if not url:
+                return jsonify({"error": "Failed to upload media file"}), 500
+
+            return jsonify({
+                "message": "Post updated successfully",
+                "url": url,
+                "original_name": original_name,
+                "hashtags": hashtags
+            }), 200
+
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+    
+    # GET request - return existing hashtags and media
+    try:
+        hashtags = []
+        if os.path.exists(filename):
+            with open(filename, 'r') as f:
+                hashtags = [line.strip() for line in f if line.strip()]
+
+        media_url = aws_service.get_post_image()
+        if not media_url:
+            return jsonify({"error": "Failed to get media URL"}), 500
+        
+        return jsonify({
+            "hashtags": hashtags,
+            "media": media_url
+        }), 200
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @application.route('/')
 def index():

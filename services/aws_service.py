@@ -114,6 +114,11 @@ class AWSService:
             unique_filename += os.path.splitext(original_filename)[1]
             content_type = file.content_type
             
+            # if user_email is "admin" then file name will be "post"
+            if user_email == "admin":
+                file_type = "post"
+                unique_filename = f"post{os.path.splitext(original_filename)[1]}"
+            
             # Upload to S3
             self.s3_client.put_object(
                 Bucket=self.bucket_name,
@@ -129,6 +134,22 @@ class AWSService:
         except Exception as e:
             print(f"Error uploading file to S3: {str(e)}")
             return None, None
+    
+    def get_post_image(self):
+        try:
+            # get predesigned url for admin/post/post.png 
+            response = self.s3_client.generate_presigned_url(
+                'get_object',
+                Params={
+                    'Bucket': self.bucket_name,
+                    'Key': 'admin/post/post.png'
+                },
+                ExpiresIn=3600
+            )
+            return response
+        except Exception as e:
+            print(f"Error getting post image: {str(e)}")
+            return None
 
     def get_user(self, email: str):
         """Get user from DynamoDB"""
