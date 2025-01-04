@@ -208,7 +208,7 @@ def submit():
             
         data = request.get_json()
         friends = data.get('friends', [])
-
+    
         # Update user's friends list
         if not aws_service.update_user_friends(user_email, friends):
             return jsonify({"error": "Failed to update friends list"}), 500
@@ -309,19 +309,23 @@ def get_all_clients():
         print(f"Error getting clients: {str(e)}")
         return jsonify({"error": "Failed to get clients"}), 500
     
-@application.route('/api/percentage', methods=['GET', 'PUT'])
-def percentage():
-    filename = 'data/percentage.txt'
+@application.route('/api/discount', methods=['GET', 'PUT'])
+def get_discount():
+    filename = 'data/discount.txt'
     if request.method == 'PUT':
         data = request.get_json()
-        percentage = data.get('percentage')
+        discount = data.get('discount')
+        multiplier = data.get('multiplier')
         with open(filename, 'w') as f:
-            f.write(str(percentage))
-        return jsonify({"message": "Percentage updated successfully"}), 200
+            f.write(f"{discount},{multiplier}")
+        return jsonify({"message": "Discount updated successfully"}), 200
     
     with open(filename, 'r') as f:
-        percentage = f.read()
-    return jsonify({"percentage": percentage}), 200
+        content = f.read()
+        discount = content.split(",")[0]
+        multiplier = content.split(",")[1]
+    # content syntax: 100,0.3
+    return jsonify({"discount": discount, "multiplier": multiplier}), 200
 
 @application.route('/api/posttags', methods=['GET', 'PUT'])
 def posttags():
@@ -398,6 +402,30 @@ def download_media(encoded_key):
         # Redirect to the pre-signed URL
         return redirect(url)
     except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    
+# on form submitted update referrals in user table and referrals score list
+@application.route('/api/update-referrals-numbers', methods=['POST'])
+@login_required
+def update_referrals_numbers():
+    try:
+        user_email = get_user_from_request()
+        if not user_email:
+            return jsonify({"error": "User not authenticated"}), 401
+        if not isinstance(user_email, str):
+            return jsonify({"error": "Invalid user email"}), 401
+            
+        data = request.get_json()
+        referral_score = data.get('referral_score')
+        
+        success = aws_service.update_referrals_numbers(user_email, referral_score)
+        
+        if success:
+            return jsonify({"message": "Referrals updated successfully"}), 200
+        else:
+            return jsonify({"error": "Failed to update referrals"}), 500
+    except Exception as e:
+        print(f"Update referrals error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @application.route('/')

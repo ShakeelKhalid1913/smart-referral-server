@@ -119,10 +119,12 @@ class AWSService:
                 file_type = "post"
                 unique_filename = f"post{os.path.splitext(original_filename)[1]}"
             
+            current_referral_number = self.get_tota_referrals(user_email)
+            
             # Upload to S3
             self.s3_client.put_object(
                 Bucket=self.bucket_name,
-                Key=f"{user_email}/{file_type}/{unique_filename}",
+                Key=f"{user_email}/{current_referral_number}/{file_type}/{unique_filename}",
                 Body=file.read(),
                 ContentType=content_type
             )
@@ -208,9 +210,11 @@ class AWSService:
                     'email': {'S': email},
                     'password': {'S': hashed_password},
                     'name': {'S': name},
-                    'friends': {'L': []},
                     'terms_accepted': {'BOOL': False},
-                    'created_at': {'S': datetime.utcnow().isoformat()}
+                    'created_at': {'S': datetime.utcnow().isoformat()},
+                    'total_referrals': {'N': '0'},
+                    'friends': {'L': []},  # Store as a 2D array
+                    'referrals_score': {'L': []}
                 }
             )
             return True
@@ -219,28 +223,52 @@ class AWSService:
             return False
 
     def update_user_friends(self, email: str, friends: list):
-        """Update user's friends list in DynamoDB"""
+        """
+        Update user's friends list in DynamoDB by adding a new group of friends
+        Each group represents friends from one form submission
+        """
         try:
-            # Convert friend data to DynamoDB format
-            dynamo_friends = []
-            for friend in friends:
-                dynamo_friend = {
-                    'M': {
-                        'name': {'S': friend['name']},
-                        'email': {'S': friend['email']},
-                        'phone': {'S': str(friend['phone'])}
-                    }
-                }
-                dynamo_friends.append(dynamo_friend)
-
-            self.dynamodb.update_item(
+            # First get the current friends list to check if it exists
+            response = self.dynamodb.get_item(
                 TableName=self.users_table,
-                Key={'email': {'S': email}},
-                UpdateExpression='SET friends = :friends',
-                ExpressionAttributeValues={
-                    ':friends': {'L': dynamo_friends}
-                }
+                Key={'email': {'S': email}}
             )
+            
+            # Create friends group in DynamoDB format
+            friends_group = {
+                'L': [
+                    {
+                        'M': {
+                            'name': {'S': friend.get('name', '')},
+                            'email': {'S': friend.get('email', '')},
+                            'phone_number': {'S': friend.get('phone', '')}
+                        }
+                    }
+                    for friend in friends
+                ]
+            }
+
+            if 'Item' not in response or 'friends' not in response['Item']:
+                # If no friends list exists, create a new one with this group
+                self.dynamodb.update_item(
+                    TableName=self.users_table,
+                    Key={'email': {'S': email}},
+                    UpdateExpression='SET friends = :friends',
+                    ExpressionAttributeValues={
+                        ':friends': {'L': [friends_group]}
+                    }
+                )
+            else:
+                # If friends list exists, append new group
+                self.dynamodb.update_item(
+                    TableName=self.users_table,
+                    Key={'email': {'S': email}},
+                    UpdateExpression='SET friends = list_append(if_not_exists(friends, :empty_list), :new_group)',
+                    ExpressionAttributeValues={
+                        ':empty_list': {'L': []},
+                        ':new_group': {'L': [friends_group]}
+                    }
+                )
             return True
         except Exception as e:
             print(f"Error updating friends: {str(e)}")
@@ -316,51 +344,74 @@ class AWSService:
 
     def get_all_clients(self):
         """Get all clients and their media from DynamoDB and S3"""
-        try:
+        # try:
             # Scan the users table to get all users
-            response = self.dynamodb.scan(
-                TableName=self.users_table,
-                ProjectionExpression="email, #n, friends, terms_accepted",
-                ExpressionAttributeNames={'#n': 'name'}
-            )
+        response = self.dynamodb.scan(
+            TableName=self.users_table
+        )
+        
+        clients = {}
+        for item in response.get('Items', []):
+            total_referrals = item.get('total_referrals', {}).get('N', '0')
+            email = item.get('email', {}).get('S', '')
+            name = item.get('name', {}).get('S', '')
+            terms_accepted = item.get('terms_accepted', {}).get('BOOL', False)
+            friends = item.get('friends', {}).get('L', [])
+            referrals_score = item.get('referrals_score', {}).get('L', [])
+                            
+            client = {
+                'email': email,
+                'name': name,
+                'terms_accepted': terms_accepted,
+                'total_referrals': total_referrals,
+            }
+            clients[email] = {}
+            clients[email]['info'] = client
+            clients[email]['data'] = []
             
-            clients = []
-            for item in response.get('Items', []):
-                client = {
-                    'email': item.get('email', {}).get('S', ''),
-                    'name': item.get('name', {}).get('S', ''),
-                    'terms_accepted': item.get('terms_accepted', {}).get('BOOL', False),
-                    'friends': [],
-                    'media': {}
-                }
+            
+            
+            # get list of friends
+            friends = item.get('friends', {}).get('L', [])
+            # get list of scores
+            referrals_score = item.get('referrals_score', {}).get('L', [])
+            
+            for i in range(int(total_referrals)):
+                client_single_referral_data = {}
                 
-                # Convert DynamoDB friends list to Python list
-                if 'friends' in item and 'L' in item['friends']:
-                    client['friends'] = [
-                        {
-                            'name': friend_item['M']['name']['S'],
-                            'phone': friend_item['M']['phone']['S'],
-                            'email': friend_item['M']['email']['S']
-                        }
-                        for friend_item in item['friends']['L']
-                    ]
+                client_single_referral_data['score'] = referrals_score[i].get('N', '0')
                 
-                # List objects in S3 for this user's email
+                # get ith group of friends
+                friends_group = friends[i].get('L', [])
+                
+                client_single_referral_data['friends'] = []
+                for j in range(len(friends_group)):
+                    client_single_referral_data['friends'].append({
+                        'name': friends_group[j].get('M', {}).get('name', {}).get('S', ''),
+                        'email': friends_group[j].get('M', {}).get('email', {}).get('S', ''),
+                        'phone': friends_group[j].get('M', {}).get('phone_number', {}).get('S', '')
+                    })
+                    
+                    
+                    
                 try:
                     s3_response = self.s3_client.list_objects_v2(
                         Bucket=self.bucket_name,
-                        Prefix=f"{client['email']}/"
+                        Prefix=f"{email}/{i}/"
                     )
+                    
+                    client_single_referral_data['media'] = {}
                     
                     # Group media by step
                     for obj in s3_response.get('Contents', []):
                         key_parts = obj['Key'].split('/')
-                        if len(key_parts) >= 3:  # email/step_name/filename
-                            step_name = key_parts[1]
-                            filename = key_parts[2]
+                        if len(key_parts) >= 4:
                             
-                            if step_name not in client['media']:
-                                client['media'][step_name] = []
+                            step_name = key_parts[2]
+                            filename = key_parts[3]
+                            
+                            if step_name not in client_single_referral_data['media']:
+                                client_single_referral_data['media'][step_name] = []
                                 
                             # Generate pre-signed URL for the media file
                             url = self.s3_client.generate_presigned_url(
@@ -372,20 +423,64 @@ class AWSService:
                                 ExpiresIn=3600  # URL expires in 1 hour
                             )
                             
-                            client['media'][step_name].append({
+                            client_single_referral_data['media'][step_name].append({
                                 'filename': filename,
                                 'url': url,
                                 'uploaded_at': obj['LastModified'].isoformat()
                             })
                             
-                except self.s3_client.exceptions.NoSuchKey:
-                    # No media files found for this user
-                    pass
+                    
+                except self.s3_client.exceptions.NoSuchKey as e:
+                    print(e)
                 
-                clients.append(client)
+                clients[email]['data'].append(client_single_referral_data)
+        return clients
             
-            return clients
-            
+        # except Exception as e:
+        #     print(f"Error getting clients: {str(e)}")
+        #     raise e
+        
+    def get_tota_referrals(self, email: str) -> int:
+        try:
+            response = self.dynamodb.get_item(
+                TableName=self.users_table,
+                Key={'email': {'S': email}}
+            )
+            return int(response.get('Item', {}).get('total_referrals', {}).get('N', '0'))
         except Exception as e:
-            print(f"Error getting clients: {str(e)}")
-            raise e
+            print(f"Error getting total referrals: {str(e)}")
+            return 0
+
+    def update_user_total_referrals(self, email: str):
+        try:
+            # update total referrals + 1
+            self.dynamodb.update_item(
+                TableName=self.users_table,
+                Key={'email': {'S': email}},
+                UpdateExpression='SET total_referrals = total_referrals + :inc',
+                ExpressionAttributeValues={
+                    ':inc': {'N': '1'}
+                }
+            )
+            return True
+        except Exception as e:
+            print(f"Error updating total referrals: {str(e)}")
+            return False
+    
+    def update_referrals_numbers(self, email: str, referral_score: int):
+        try:
+            self.update_user_total_referrals(email)
+            # append new score in referrals_score list
+            self.dynamodb.update_item(
+                TableName=self.users_table,
+                Key={'email': {'S': email}},
+                UpdateExpression='SET referrals_score = list_append(if_not_exists(referrals_score, :empty_list), :new_score)',
+                ExpressionAttributeValues={
+                    ':empty_list': {'L': []},
+                    ':new_score': {'L': [{'N': str(referral_score)}]}  # Format as DynamoDB number type
+                }
+            )
+            return True
+        except Exception as e:
+            print(f"Error updating referrals numbers: {str(e)}")
+            return False
