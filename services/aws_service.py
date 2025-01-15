@@ -29,10 +29,12 @@ class AWSService:
         self.bucket_name = 'smartreferralhub-bucket'
         self.users_table = 'smart-referral-users'
         self.links_table = 'smart-referral-links'
+        self.companies_table = 'smart-referral-companies'
 
         # Create tables if they don't exist
         self._create_users_table_if_not_exists()
         self._create_links_table_if_not_exists()
+        self._create_companies_table_if_not_exists()
 
     def _create_users_table_if_not_exists(self):
         """Create the users table if it doesn't exist"""
@@ -98,6 +100,46 @@ class AWSService:
             waiter = self.dynamodb.get_waiter('table_exists')
             waiter.wait(TableName=self.links_table)
             print(f"Links table created: {self.links_table}")
+
+    def _create_companies_table_if_not_exists(self):
+        """Create the companies table if it doesn't exist"""
+        try:
+            self.dynamodb.describe_table(TableName=self.companies_table)
+        except self.dynamodb.exceptions.ResourceNotFoundException:
+            print(f"Creating companies table: {self.companies_table}")
+            self.dynamodb.create_table(
+                TableName=self.companies_table,
+                KeySchema=[
+                    {'AttributeName': 'email', 'KeyType': 'HASH'}
+                ],
+                AttributeDefinitions=[
+                    {'AttributeName': 'email', 'AttributeType': 'S'},
+                    {'AttributeName': 'subscription_status', 'AttributeType': 'S'}
+                ],
+                GlobalSecondaryIndexes=[
+                    {
+                        'IndexName': 'SubscriptionStatusIndex',
+                        'KeySchema': [
+                            {'AttributeName': 'subscription_status', 'KeyType': 'HASH'}
+                        ],
+                        'Projection': {
+                            'ProjectionType': 'ALL'
+                        },
+                        'ProvisionedThroughput': {
+                            'ReadCapacityUnits': 5,
+                            'WriteCapacityUnits': 5
+                        }
+                    }
+                ],
+                ProvisionedThroughput={
+                    'ReadCapacityUnits': 5,
+                    'WriteCapacityUnits': 5
+                }
+            )
+            # Wait for the table to be created
+            waiter = self.dynamodb.get_waiter('table_exists')
+            waiter.wait(TableName=self.companies_table)
+            print(f"Companies table created: {self.companies_table}")
 
     def generate_file_name(self, file_type: str) -> str:
         """Generate a unique file name with timestamp and random number"""
@@ -484,3 +526,72 @@ class AWSService:
         except Exception as e:
             print(f"Error updating referrals numbers: {str(e)}")
             return False
+
+    def get_item(self, table_name: str, key: dict) -> dict:
+        """Get an item from DynamoDB table"""
+        try:
+            response = self.dynamodb.get_item(
+                TableName=table_name,
+                Key={k: {'S': v} for k, v in key.items()}
+            )
+            return response.get('Item')
+        except Exception as e:
+            print(f"Error getting item from {table_name}: {str(e)}")
+            return None
+
+    def put_item(self, table_name: str, item: dict) -> bool:
+        """Put an item into DynamoDB table"""
+        try:
+            # Convert Python types to DynamoDB types
+            dynamodb_item = {}
+            for k, v in item.items():
+                if isinstance(v, str):
+                    dynamodb_item[k] = {'S': v}
+                elif isinstance(v, bool):
+                    dynamodb_item[k] = {'BOOL': v}
+                elif isinstance(v, (int, float)):
+                    dynamodb_item[k] = {'N': str(v)}
+                else:
+                    dynamodb_item[k] = {'S': str(v)}
+
+            self.dynamodb.put_item(
+                TableName=table_name,
+                Item=dynamodb_item
+            )
+            return True
+        except Exception as e:
+            print(f"Error putting item into {table_name}: {str(e)}")
+            return False
+
+    def query_items(self, table_name: str, index_name: str, key_condition: dict) -> list:
+        """Query items from DynamoDB table using a secondary index"""
+        try:
+            # Build the key condition expression and attribute values
+            key_condition_expr = []
+            expr_attr_names = {}
+            expr_attr_values = {}
+            
+            for k, v in key_condition.items():
+                key_condition_expr.append(f"#{k} = :{k}")
+                expr_attr_names[f"#{k}"] = k
+                if isinstance(v, str):
+                    expr_attr_values[f":{k}"] = {'S': v}
+                elif isinstance(v, bool):
+                    expr_attr_values[f":{k}"] = {'BOOL': v}
+                elif isinstance(v, (int, float)):
+                    expr_attr_values[f":{k}"] = {'N': str(v)}
+                else:
+                    expr_attr_values[f":{k}"] = {'S': str(v)}
+
+            response = self.dynamodb.query(
+                TableName=table_name,
+                IndexName=index_name,
+                KeyConditionExpression=' AND '.join(key_condition_expr),
+                ExpressionAttributeNames=expr_attr_names,
+                ExpressionAttributeValues=expr_attr_values
+            )
+            
+            return response.get('Items', [])
+        except Exception as e:
+            print(f"Error querying items from {table_name}: {str(e)}")
+            return []

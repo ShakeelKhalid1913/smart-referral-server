@@ -1,8 +1,10 @@
 import os
 from flask import Flask, request, jsonify, redirect
 from flask_cors import CORS
-from werkzeug.security import check_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
 import json
+from datetime import datetime, timedelta
+import jwt
 
 from utils.auth import generate_token, login_required, get_user_from_request
 from services.aws_service import AWSService
@@ -66,13 +68,33 @@ def login():
         if not email or not password:
             return jsonify({"error": "Email and password are required"}), 400
 
-        # check if it is admin from .env
-        if email == os.environ.get('admin_email') and password == os.environ.get('admin_password'):
+        # # check if it is admin from .env
+        # if email == os.environ.get('admin_email') and password == os.environ.get('admin_password'):
+        #     return jsonify({
+        #         "message": "Login successful",
+        #         "email": email,
+        #         "token": "admin-token",
+        #         "is_admin": True
+        #     }), 200
+
+        # Check if it's a company account
+        company = aws_service.get_item(aws_service.companies_table, {'email': email})
+        if company:
+            stored_password = company.get('password', {}).get('S', '')
+            if not check_password_hash(stored_password, password):
+                return jsonify({"error": "Invalid credentials"}), 401
+
+            # Generate token for company
+            token = generate_token(email)
+
             return jsonify({
                 "message": "Login successful",
                 "email": email,
-                "token": "admin-token",
-                "is_admin": True
+                "name": company.get('name', {}).get('S', ''),
+                "token": token,
+                "is_company": True,
+                "subscription_plan": company.get('subscription_plan', {}).get('S', ''),
+                "subscription_status": company.get('subscription_status', {}).get('S', '')
             }), 200
 
         # Get user and verify password
@@ -92,7 +114,7 @@ def login():
             "email": email,
             "name": user_item.get('name', {}).get('S', ''),
             "token": token,
-            "is_admin": False
+            "is_company": False
         }), 200
 
     except Exception as e:
@@ -427,6 +449,68 @@ def update_referrals_numbers():
     except Exception as e:
         print(f"Update referrals error: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
+@application.route('/api/signup-company', methods=['POST'])
+def signup_company():
+    try:
+        data = request.get_json()
+        email = data.get('email')
+        password = data.get('password')
+        name = data.get('name')
+        phone = data.get('phone')
+        website = data.get('website')
+        subscription_plan = data.get('subscription_plan')
+        
+        # Check if required fields are present
+        if not all([email, password, name, phone, website, subscription_plan]):
+            return jsonify({"error": "All fields are required"}), 400
+            
+        # Check if company already exists
+        existing_company = aws_service.get_item(aws_service.companies_table, {'email': email})
+        if existing_company:
+            return jsonify({"error": "Company already exists"}), 400
+            
+        # Create company record
+        company_data = {
+            'email': email,
+            'name': name,
+            'password': generate_password_hash(password),
+            'phone': phone,
+            'website': website,
+            'subscription_plan': subscription_plan,
+            'subscription_status': 'active',
+            'subscription_start_date': datetime.now().isoformat(),
+            'subscription_end_date': (datetime.now() + timedelta(days=365 if subscription_plan == 'yearly' else 30)).isoformat(),
+            'created_at': datetime.now().isoformat(),
+            'is_company': True
+        }
+        
+        # Save company to DynamoDB
+        aws_service.put_item(aws_service.companies_table, company_data)
+        
+        # Generate JWT token
+        token = jwt.encode(
+            {
+                'email': email,
+                'name': name,
+                'is_company': True,
+                'exp': datetime.utcnow() + timedelta(days=1)
+            },
+            application.config['SECRET_KEY']
+        )
+        
+        return jsonify({
+            'token': token,
+            'email': email,
+            'name': name,
+            'is_company': True,
+            'subscription_plan': subscription_plan,
+            'subscription_status': 'active'
+        }), 200
+        
+    except Exception as e:
+        print(f"Error in company signup: {str(e)}")
+        return jsonify({"error": "Failed to create company account"}), 500
 
 @application.route('/')
 def index():
