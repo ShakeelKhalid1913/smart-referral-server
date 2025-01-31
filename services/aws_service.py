@@ -30,11 +30,13 @@ class AWSService:
         self.users_table = 'smart-referral-users'
         self.links_table = 'smart-referral-links'
         self.companies_table = 'smart-referral-companies'
+        self.signup_tokens_table = 'smart-referral-signup-tokens'
 
         # Create tables if they don't exist
         self._create_users_table_if_not_exists()
         self._create_links_table_if_not_exists()
         self._create_companies_table_if_not_exists()
+        self._create_signup_tokens_table_if_not_exists()
 
     def _create_users_table_if_not_exists(self):
         """Create the users table if it doesn't exist"""
@@ -136,10 +138,53 @@ class AWSService:
                     'WriteCapacityUnits': 5
                 }
             )
+            
             # Wait for the table to be created
             waiter = self.dynamodb.get_waiter('table_exists')
             waiter.wait(TableName=self.companies_table)
             print(f"Companies table created: {self.companies_table}")
+            
+            # Add default settings for new companies
+            self.dynamodb.put_item(
+                TableName=self.companies_table,
+                Item={
+                    'email': {'S': 'default'},
+                    'subscription_status': {'S': 'default'},
+                    'discount': {
+                        'M': {
+                            'limit': {'N': '100'},
+                            'multiplier': {'N': '0.3'}
+                        }
+                    },
+                    'hashtags': {
+                        'L': []
+                    }
+                }
+            )
+
+    def _create_signup_tokens_table_if_not_exists(self):
+        """Create the signup tokens table if it doesn't exist"""
+        try:
+            self.dynamodb.describe_table(TableName=self.signup_tokens_table)
+        except self.dynamodb.exceptions.ResourceNotFoundException:
+            print(f"Creating signup tokens table: {self.signup_tokens_table}")
+            self.dynamodb.create_table(
+                TableName=self.signup_tokens_table,
+                KeySchema=[
+                    {'AttributeName': 'token', 'KeyType': 'HASH'}
+                ],
+                AttributeDefinitions=[
+                    {'AttributeName': 'token', 'AttributeType': 'S'}
+                ],
+                ProvisionedThroughput={
+                    'ReadCapacityUnits': 5,
+                    'WriteCapacityUnits': 5
+                }
+            )
+            # Wait for the table to be created
+            waiter = self.dynamodb.get_waiter('table_exists')
+            waiter.wait(TableName=self.signup_tokens_table)
+            print(f"Signup tokens table created: {self.signup_tokens_table}")
 
     def generate_file_name(self, file_type: str) -> str:
         """Generate a unique file name with timestamp and random number"""
@@ -156,10 +201,24 @@ class AWSService:
             unique_filename += os.path.splitext(original_filename)[1]
             content_type = file.content_type
             
+            # check user_email is company_email
+            company_email = self.get_company_by_email(user_email)
+            
             # if user_email is "admin" then file name will be "post"
-            if user_email == "admin":
+            if company_email is not None:
                 file_type = "post"
                 unique_filename = f"post{os.path.splitext(original_filename)[1]}"
+                
+                self.s3_client.put_object(
+                    Bucket=self.bucket_name,
+                    Key=f"{user_email}/{file_type}/{unique_filename}",
+                    Body=file.read(),
+                    ContentType=content_type
+                )
+                
+                # Generate URL
+                url = f"https://{self.bucket_name}.s3.amazonaws.com//{user_email}/{file_type}/{unique_filename}"
+                return url, original_filename
             
             current_referral_number = self.get_tota_referrals(user_email)
             
@@ -179,6 +238,58 @@ class AWSService:
             print(f"Error uploading file to S3: {str(e)}")
             return None, None
     
+    def get_company_by_name(self, company_name):
+        """Get company details from DynamoDB by company name
+        
+        Args:
+            company_name (str): Name of the company to fetch
+            
+        Returns:
+            dict: Company details if found, None otherwise
+        """
+        try:
+            # Query the companies table using the name
+            response = self.dynamodb.scan(
+                TableName=self.companies_table,
+                FilterExpression='contains(#name, :name)',
+                ExpressionAttributeNames={
+                    '#name': 'name'
+                },
+                ExpressionAttributeValues={
+                    ':name': {'S': company_name}
+                }
+            )
+            
+            if 'Items' in response and len(response['Items']) > 0:
+                item = response['Items'][0]
+                return {
+                    'email': item.get('email', {}).get('S'),
+                    'name': item.get('name', {}).get('S'),
+                    'subscription_status': item.get('subscription_status', {}).get('S'),
+                    'phone': item.get('phone', {}).get('S'),
+                    'website': item.get('website', {}).get('S')
+                }
+            return None
+            
+        except Exception as e:
+            print(f"Error getting company by name: {str(e)}")
+            return None
+        
+    def get_company_by_user_email(self, email):
+        try:
+            response = self.dynamodb.get_item(
+                TableName=self.users_table,
+                Key={'email': {'S': email}}
+            )
+            
+            if 'Item' in response and 'company_name' in response['Item']:
+                company_name = response['Item']['company_name']['S']
+                return self.get_company_by_name(company_name)
+            return None
+        except Exception as e:
+            print(f"Error getting company by email: {str(e)}")
+            return None
+            
     def get_post_image(self):
         try:
             # Generate a clean download URL instead of direct S3 URL
@@ -196,25 +307,43 @@ class AWSService:
     def check_file_exists(self, key: str):
         """Check if a file exists in S3"""
         try:
+            print(f"Checking if file exists in S3: {key}")
             self.s3_client.head_object(Bucket=self.bucket_name, Key=key)
             return True
-        except:
+        except Exception as e:
+            print(f"File does not exist in S3: {key}, Error: {str(e)}")
             return False
             
     def encode_key(self, key: str) -> str:
         """Encode the S3 key to a URL-safe string"""
         import base64
-        return base64.urlsafe_b64encode(key.encode()).decode()
+        encoded = base64.urlsafe_b64encode(key.encode()).decode()
+        print(f"Encoded key: {key} -> {encoded}")
+        return encoded
         
     def decode_key(self, encoded_key: str) -> str:
         """Decode the URL-safe string back to S3 key"""
         import base64
-        return base64.urlsafe_b64decode(encoded_key.encode()).decode()
+        try:
+            decoded = base64.urlsafe_b64decode(encoded_key.encode()).decode()
+            print(f"Decoded key: {encoded_key} -> {decoded}")
+            return decoded
+        except Exception as e:
+            print(f"Error decoding key: {encoded_key}, Error: {str(e)}")
+            return None
         
     def get_download_url(self, encoded_key: str):
         """Generate a pre-signed URL for downloading"""
         try:
             key = self.decode_key(encoded_key)
+            if not key:
+                print("Failed to decode key")
+                return None
+                
+            if not self.check_file_exists(key):
+                print("File does not exist in S3")
+                return None
+                
             url = self.s3_client.generate_presigned_url(
                 'get_object',
                 Params={
@@ -224,6 +353,7 @@ class AWSService:
                 },
                 ExpiresIn=300  # URL expires in 5 minutes
             )
+            print(f"Generated presigned URL for key: {key}")
             return url
         except Exception as e:
             print(f"Error generating download URL: {str(e)}")
@@ -241,25 +371,54 @@ class AWSService:
             print(f"Error getting user: {str(e)}")
             return None
 
-    def create_user(self, email: str, password: str, name: str):
-        """Create a new user in DynamoDB"""
+    def create_user(self, user_data: dict) -> bool:
+        """Create a new user in DynamoDB
+        
+        Args:
+            user_data (dict): User data containing:
+                - email: User's email (required)
+                - password: Hashed password (required)
+                - name: User's name (required)
+                - company_name: Name of associated company (required for customers)
+                - company_email: Email of associated company (required for customers)
+                - created_at: ISO format timestamp
+                
+        Returns:
+            bool: True if user was created successfully, False otherwise
+        """
         try:
-            hashed_password = generate_password_hash(password)
-            
+            # Validate required fields
+            required_fields = ['email', 'password', 'name', 'company_name', 'company_email', 'created_at']
+            if not all(field in user_data for field in required_fields):
+                print(f"Missing required fields. Required: {required_fields}, Got: {list(user_data.keys())}")
+                return False
+
+            # Create DynamoDB item
+            item = {
+                'email': {'S': user_data['email']},
+                'password': {'S': user_data['password']},
+                'name': {'S': user_data['name']},
+                'company_name': {'S': user_data['company_name']},
+                'company_email': {'S': user_data['company_email']},
+                'created_at': {'S': user_data['created_at']},
+                'terms_accepted': {'BOOL': user_data.get('terms_accepted', False)},
+                'friends': {'L': []},
+                'referrals_score': {'L': []},
+                'total_referrals': {'N': '0'}
+            }
+           
+            # Try to create the user
+            print(f"Creating user in DynamoDB: {user_data['email']}")
             self.dynamodb.put_item(
                 TableName=self.users_table,
-                Item={
-                    'email': {'S': email},
-                    'password': {'S': hashed_password},
-                    'name': {'S': name},
-                    'terms_accepted': {'BOOL': False},
-                    'created_at': {'S': datetime.utcnow().isoformat()},
-                    'total_referrals': {'N': '0'},
-                    'friends': {'L': []},  # Store as a 2D array
-                    'referrals_score': {'L': []}
-                }
+                Item=item,
+                ConditionExpression='attribute_not_exists(email)'
             )
+            print(f"Successfully created user: {user_data['email']}")
             return True
+        except self.dynamodb.exceptions.ConditionalCheckFailedException:
+            print(f"User already exists with email: {user_data['email']}")
+            return False
         except Exception as e:
             print(f"Error creating user: {str(e)}")
             return False
@@ -347,15 +506,18 @@ class AWSService:
             print(f"Error checking terms acceptance: {str(e)}")
             return False
 
-    def get_links_by_step(self, step_name: str):
-        """Get all links for a specific step"""
+    def get_links_by_step(self, company_name: str, step_name: str):
+        """Get all links for a specific step and company using StepNameIndex"""
         try:
+            # Query the secondary index
             response = self.dynamodb.query(
                 TableName=self.links_table,
                 IndexName='StepNameIndex',
                 KeyConditionExpression='step_name = :step_name',
+                FilterExpression='begins_with(id, :id_prefix)',
                 ExpressionAttributeValues={
-                    ':step_name': {'S': step_name}
+                    ':step_name': {'S': step_name},
+                    ':id_prefix': {'S': f"{company_name}#"}
                 }
             )
             return response.get('Items', [])
@@ -363,20 +525,25 @@ class AWSService:
             print(f"Error getting links: {str(e)}")
             return []
 
-    def update_link(self, step_name: str, platform: str, new_link: str):
+
+    def update_link(self, company_name: str, step_name: str, platform: str, new_link: str):
         """Update a specific link"""
         try:
+            # Construct the id key with company_name, step_name, and platform
+            id_key = f"{company_name}#{step_name}#{platform}"
+            
+            # Perform the update operation
             self.dynamodb.update_item(
                 TableName=self.links_table,
                 Key={
-                    'id': {'S': f"{step_name}#{platform}"}
+                    'id': {'S': id_key}  # Update the id key with the new format
                 },
                 UpdateExpression='SET #link = :link',
                 ExpressionAttributeNames={
-                    '#link': 'link'
+                    '#link': 'link'  # Map 'link' to avoid reserved keywords
                 },
                 ExpressionAttributeValues={
-                    ':link': {'S': new_link}
+                    ':link': {'S': new_link}  # Bind the new link value
                 }
             )
             return True
@@ -384,7 +551,8 @@ class AWSService:
             print(f"Error updating link: {str(e)}")
             return False
 
-    def get_all_clients(self):
+
+    def get_all_clients(self, company_email):
         """Get all clients and their media from DynamoDB and S3"""
         # try:
             # Scan the users table to get all users
@@ -394,6 +562,9 @@ class AWSService:
         
         clients = {}
         for item in response.get('Items', []):
+            # if item has company email, then it's a client
+            if item.get('company_email', {}).get('S', '') != company_email:
+                continue
             total_referrals = item.get('total_referrals', {}).get('N', '0')
             email = item.get('email', {}).get('S', '')
             name = item.get('name', {}).get('S', '')
@@ -595,3 +766,287 @@ class AWSService:
         except Exception as e:
             print(f"Error querying items from {table_name}: {str(e)}")
             return []
+
+    def get_company_settings(self, company_email: str) -> dict:
+        """Get company-specific settings from DynamoDB
+        
+        Args:
+            company_email: Company's email
+            
+        Returns:
+            dict: Company settings including discount and hashtags
+        """
+        try:
+            response = self.dynamodb.get_item(
+                TableName=self.companies_table,
+                Key={'email': {'S': company_email}},
+                ProjectionExpression='discount, hashtags'
+            )
+            
+            if 'Item' in response:
+                item = response['Item']
+                return {
+                    'discount': item.get('discount', {}).get('M', {}).get('limit', {}).get('N', '100'),
+                    'multiplier': item.get('discount', {}).get('M', {}).get('multiplier', {}).get('N', '0.3'),
+                    'hashtags': [tag['S'] for tag in item.get('hashtags', {}).get('L', [])]
+                }
+            
+            # Return default values if no settings found
+            return {
+                'discount': '100',
+                'multiplier': '0.3',
+                'hashtags': []
+            }
+            
+        except Exception as e:
+            print(f"Error getting company settings: {str(e)}")
+            return None
+            
+    def update_company_settings(self, company_email: str, settings: dict) -> bool:
+        """Update company-specific settings in DynamoDB
+        
+        Args:
+            company_email: Company's email
+            settings: Dict containing settings to update:
+                - discount: Score limit for discount
+                - multiplier: Discount multiplier
+                - hashtags: List of hashtags
+                
+        Returns:
+            bool: True if update successful, False otherwise
+        """
+        try:
+            update_expr_parts = []
+            expr_attr_values = {}
+            
+            # Update discount settings if provided
+            if 'discount' in settings or 'multiplier' in settings:
+                discount_attr = {
+                    'M': {
+                        'limit': {'N': str(settings.get('discount', '100'))},
+                        'multiplier': {'N': str(settings.get('multiplier', '0.3'))}
+                    }
+                }
+                update_expr_parts.append('discount = :discount')
+                expr_attr_values[':discount'] = discount_attr
+            
+            # Update hashtags settings if provided
+            if 'hashtags' in settings:
+                hashtags_attr = {
+                    'L': [{'S': tag} for tag in settings.get('hashtags', [])]
+                }
+                update_expr_parts.append('hashtags = :hashtags')
+                expr_attr_values[':hashtags'] = hashtags_attr
+            
+            if not update_expr_parts:
+                return True  # Nothing to update
+                
+            update_expression = 'SET ' + ', '.join(update_expr_parts)
+            
+            self.dynamodb.update_item(
+                TableName=self.companies_table,
+                Key={'email': {'S': company_email}},
+                UpdateExpression=update_expression,
+                ExpressionAttributeValues=expr_attr_values
+            )
+            return True
+            
+        except Exception as e:
+            print(f"Error updating company settings: {str(e)}")
+            return False
+
+    def get_post_settings(self, company_email: str) -> dict:
+        """Get company post settings including hashtags and post image
+        
+        Args:
+            company_email: Company's email
+            
+        Returns:
+            dict: Post settings including hashtags list and post image URL
+        """
+        try:
+            # Get hashtags from DynamoDB
+            response = self.dynamodb.get_item(
+                TableName=self.companies_table,
+                Key={'email': {'S': company_email}},
+                ProjectionExpression='hashtags'
+            )
+            
+            hashtags = []
+            if 'Item' in response and 'hashtags' in response['Item']:
+                hashtags = [tag['S'] for tag in response['Item']['hashtags'].get('L', [])]
+            
+            # Get post image from S3
+            post_image_url = None
+            try:
+                # List objects in the company's post directory
+                response = self.s3_client.list_objects_v2(
+                    Bucket=self.bucket_name,
+                    Prefix=f"{company_email}/post/",
+                    MaxKeys=1
+                )
+                
+                # Get the first image if any exists
+                if 'Contents' in response and len(response['Contents']) > 0:
+                    key = response['Contents'][0]['Key']
+                    post_image_url = f"https://{self.bucket_name}.s3.amazonaws.com/{key}"
+            except Exception as e:
+                print(f"Error getting post image: {str(e)}")
+            
+            return {
+                'hashtags': hashtags,
+                'media': post_image_url
+            }
+            
+        except Exception as e:
+            print(f"Error getting post settings: {str(e)}")
+            return {
+                'hashtags': [],
+                'media': None
+            }
+
+    def token_exists(self, token: str) -> bool:
+        """Check if a token exists in the database"""
+        try:
+            response = self.dynamodb.get_item(
+                TableName=self.signup_tokens_table,
+                Key={'token': {'S': token}}
+            )
+            return 'Item' in response
+        except Exception as e:
+            print(f"Error checking token existence: {str(e)}")
+            return False
+
+    def create_signup_token(self, company_name: str, token: str) -> bool:
+        """Create a new signup token"""
+        try:
+            # Create new token
+            self.dynamodb.put_item(
+                TableName=self.signup_tokens_table,
+                Item={
+                    'token': {'S': token},
+                    'company_name': {'S': company_name.replace("-", " ")},
+                    'created_at': {'S': datetime.now().isoformat()},
+                    'used': {'BOOL': False}
+                }
+            )
+            print(f"Created signup token: {token} for company: {company_name}")
+            return True
+        except Exception as e:
+            print(f"Error creating signup token: {str(e)}")
+            return False
+
+    def check_token_validity(self, company_name: str, token: str) -> bool:
+        """Check if a token is valid and unused without marking it as used"""
+        try:
+            # Get the token
+            response = self.dynamodb.get_item(
+                TableName=self.signup_tokens_table,
+                Key={'token': {'S': token}}
+            )
+            
+            # Check if token exists and matches company exactly
+            if 'Item' not in response:
+                print(f"Token not found: {token}")
+                return False
+                
+            token_data = response['Item']
+            
+            # Clean company names for exact comparison
+            db_company = token_data['company_name']['S'].strip().lower()
+            input_company = company_name.replace("-", " ").strip().lower()
+            
+            # Check if token is expired (10 minutes)
+            created_at = datetime.fromisoformat(token_data['created_at']['S'])
+            now = datetime.now()
+            time_diff = (now - created_at).total_seconds()
+            is_expired = time_diff > 600  # 10 minutes = 600 seconds
+            
+            company_match = db_company == input_company
+            is_unused = not token_data['used']['BOOL']
+            
+            if not company_match:
+                print(f"Company mismatch. Expected: {db_company}, Got: {input_company}")
+            if not is_unused:
+                print(f"Token already used: {token}")
+            if is_expired:
+                print(f"Token expired. Created at: {created_at}, Now: {now}, Time diff: {time_diff} seconds")
+                
+            return company_match and is_unused and not is_expired
+        except Exception as e:
+            print(f"Error checking token validity: {str(e)}")
+            return False
+
+    def validate_and_use_signup_token(self, company_name: str, token: str) -> bool:
+        """Validate a signup token and mark it as used if valid"""
+        try:
+            # First check if token is valid
+            if not self.check_token_validity(company_name, token):
+                return False
+            
+            # Mark token as used
+            self.dynamodb.update_item(
+                TableName=self.signup_tokens_table,
+                Key={'token': {'S': token}},
+                UpdateExpression='SET used = :used',
+                ExpressionAttributeValues={':used': {'BOOL': True}}
+            )
+            print(f"Marked token as used: {token}")
+            return True
+        except Exception as e:
+            print(f"Error validating signup token: {str(e)}")
+            return False
+        
+    def remove_signup_token(self, company_name: str, company_web: str, token: str) -> bool:
+        """Remove a signup token from the database"""
+        try:
+            self.dynamodb.delete_item(
+                TableName=self.signup_tokens_table,
+                Key={'token': {'S': token}}
+            )
+            print(f"Deleted used token: {token}")
+            return True
+        except Exception as e:
+            print(f"Error deleting token: {str(e)}")
+            return False
+    
+    def init_links(self, company_name: str, company_web: str):
+        # Initial links data
+        initial_links = [
+            # Reviews
+            {'step_name': 'reviews', 'platform': 'yelp', 'link': company_web},
+            {'step_name': 'reviews', 'platform': 'facebook', 'link': company_web},
+            {'step_name': 'reviews', 'platform': 'sitejabber', 'link': company_web},
+            
+            # Social Media
+            {'step_name': 'social media', 'platform': 'linkedin', 'link': company_web},
+            {'step_name': 'social media', 'platform': 'youtube', 'link': company_web},
+            {'step_name': 'social media', 'platform': 'facebook', 'link': company_web},
+            {'step_name': 'social media', 'platform': 'instagram', 'link': company_web},
+            
+            # Content Sharing
+            {'step_name': 'content', 'platform': 'facebook', 'link': company_web},
+            {'step_name': 'content', 'platform': 'instagram', 'link': company_web},
+            
+            # Tagging
+            {'step_name': 'tagging', 'platform': 'facebook', 'link': company_web},
+            {'step_name': 'tagging', 'platform': 'instagram', 'link': company_web}
+        ]
+
+        # Insert initial links
+        for link_data in initial_links:
+            link = {
+                'id': {'S': f"{company_name}#{link_data['step_name']}#{link_data['platform']}"},
+                'step_name': {'S': link_data['step_name']},
+                'platform': {'S': link_data['platform']},
+                'link': {'S': link_data['link']},
+                'created_at': {'N': str(int(datetime.now().timestamp()))}
+            }
+            try:
+                response = self.dynamodb.put_item(
+                    TableName=self.links_table,
+                    Item=link
+                )
+                print(f"Added link: {link_data['step_name']} - {link_data['platform']}")
+            except Exception as e:
+                print(f"Error adding link {link_data['step_name']} - {link_data['platform']}: {str(e)}")

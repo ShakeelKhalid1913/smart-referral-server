@@ -8,8 +8,6 @@ import jwt
 
 from utils.auth import generate_token, login_required, get_user_from_request
 from services.aws_service import AWSService
-from models.user import User, Friend
-
 
 # Initialize Flask app
 application = Flask(__name__)
@@ -21,42 +19,11 @@ CORS(application,
      origins=["https://smartreferralhub.com", "http://localhost:5173"],
      allow_headers=["Content-Type", "Authorization"],
      methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-     expose_headers=["Content-Type", "Authorization"])
+     expose_headers=["Content-Type", "Authorization"],
+     max_age=3600)
 
 # Initialize AWS services
 aws_service = AWSService()
-
-@application.route('/api/signup', methods=['POST'])
-def signup():
-    try:
-        data = request.get_json()
-        email = data.get('email').lower()
-        password = data.get('password')
-        name = data.get('name')
-
-        if not email or not password or not name:
-            return jsonify({"error": "Email, password, and name are required"}), 400
-
-        # Check if user already exists
-        existing_user = aws_service.get_user(email)
-        if existing_user:
-            return jsonify({"error": "User already exists"}), 409
-
-        # Create new user
-        if aws_service.create_user(email, password, name):
-            token = generate_token(email)
-            return jsonify({
-                "message": "Signup successful",
-                "email": email,
-                "name": name,
-                "token": token
-            }), 201
-        else:
-            return jsonify({"error": "Failed to create user"}), 500
-
-    except Exception as e:
-        print(f"Error in signup: {str(e)}")
-        return jsonify({"error": str(e)}), 500
 
 @application.route('/api/login', methods=['POST'])
 def login():
@@ -67,15 +34,6 @@ def login():
 
         if not email or not password:
             return jsonify({"error": "Email and password are required"}), 400
-
-        # # check if it is admin from .env
-        # if email == os.environ.get('admin_email') and password == os.environ.get('admin_password'):
-        #     return jsonify({
-        #         "message": "Login successful",
-        #         "email": email,
-        #         "token": "admin-token",
-        #         "is_admin": True
-        #     }), 200
 
         # Check if it's a company account
         company = aws_service.get_item(aws_service.companies_table, {'email': email})
@@ -287,7 +245,11 @@ def accept_terms():
 @application.route('/api/links/<step_name>', methods=['GET'])
 def get_step_links(step_name):
     try:
-        links = aws_service.get_links_by_step(step_name.lower())
+        # Get company from request
+        company_name = request.args.get('company_name')
+        if not company_name:
+            return jsonify({"error": "Company name is required"}), 400
+        links = aws_service.get_links_by_step(company_name, step_name.lower())
         return jsonify({
             "links": [
                 {
@@ -305,6 +267,10 @@ def get_step_links(step_name):
 @application.route('/api/links', methods=['PUT'])
 def update_link():
     try:
+        # Get company from request
+        company_name = request.args.get('company_name')
+        if not company_name:
+            return jsonify({"error": "Company name is required"}), 400
         data = request.get_json()
         step_name = data.get('step_name')
         platform = data.get('platform')
@@ -313,7 +279,7 @@ def update_link():
         if not all([step_name, platform, new_link]):
             return jsonify({"error": "Missing required fields"}), 400
 
-        if aws_service.update_link(step_name.lower(), platform.lower(), new_link):
+        if aws_service.update_link(company_name, step_name.lower(), platform.lower(), new_link):
             return jsonify({"message": "Link updated successfully"}), 200
         return jsonify({"error": "Failed to update link"}), 500
 
@@ -325,7 +291,11 @@ def update_link():
 def get_all_clients():
     # get all clients from DynamoDB and then there media from s3 bucket {bucket/email/step_name/}
     try:
-        clients = aws_service.get_all_clients()
+        company_email = request.args.get('company_email')
+        if not company_email:
+            return jsonify({"error": "Company email is required"}), 400
+            
+        clients = aws_service.get_all_clients(company_email)
         return jsonify({"clients": clients}), 200
     except Exception as e:
         print(f"Error getting clients: {str(e)}")
@@ -333,28 +303,45 @@ def get_all_clients():
     
 @application.route('/api/discount', methods=['GET', 'PUT'])
 def get_discount():
-    filename = 'data/discount.txt'
-    if request.method == 'PUT':
-        data = request.get_json()
-        discount = data.get('discount')
-        multiplier = data.get('multiplier')
-        with open(filename, 'w') as f:
-            f.write(f"{discount},{multiplier}")
-        return jsonify({"message": "Discount updated successfully"}), 200
-    
-    with open(filename, 'r') as f:
-        content = f.read()
-        discount = content.split(",")[0]
-        multiplier = content.split(",")[1]
-    # content syntax: 100,0.3
-    return jsonify({"discount": discount, "multiplier": multiplier}), 200
+    try:
+        # Get company email from request
+        company_email = request.args.get('company_email')
+        if not company_email:
+            return jsonify({"error": "Company email is required"}), 400
+
+        if request.method == 'PUT':
+            data = request.get_json()
+            settings = {
+                'discount': data.get('discount', '100'),
+                'multiplier': data.get('multiplier', '0.3')
+            }
+            
+            if aws_service.update_company_settings(company_email, settings):
+                return jsonify({"message": "Discount updated successfully"}), 200
+            return jsonify({"error": "Failed to update discount"}), 500
+        
+        # GET request
+        settings = aws_service.get_company_settings(company_email)
+        if settings:
+            return jsonify({
+                "discount": settings['discount'],
+                "multiplier": settings['multiplier']
+            }), 200
+        return jsonify({"error": "Failed to get discount settings"}), 500
+        
+    except Exception as e:
+        print(f"Error in discount endpoint: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 
 @application.route('/api/posttags', methods=['GET', 'PUT'])
 def posttags():
-    filename = 'data/hashtags.txt'
-    
-    if request.method == 'PUT':
-        try:
+    try:
+        # Get company email from request
+        company_email = request.args.get('company_email')
+        if not company_email:
+            return jsonify({"error": "Company email is required"}), 400
+            
+        if request.method == 'PUT':
             # Handle file upload
             file = request.files.get('media')
             if not file:
@@ -370,19 +357,24 @@ def posttags():
             except json.JSONDecodeError:
                 return jsonify({"error": "Invalid hashtags format"}), 400
 
-            # Save hashtags
-            with open(filename, 'w') as f:
-                f.write('\n'.join(hashtags))
-
             # Upload file to S3
             url, original_name = aws_service.upload_file_to_s3(
                 file,
                 'media',
-                'admin'
+                company_email  # Use company email instead of 'admin'
             )
             
             if not url:
                 return jsonify({"error": "Failed to upload media file"}), 500
+
+            # Update company settings with new hashtags and image
+            settings = {
+                'hashtags': hashtags,
+                'post_image': url
+            }
+            
+            if not aws_service.update_company_settings(company_email, settings):
+                return jsonify({"error": "Failed to update settings"}), 500
 
             return jsonify({
                 "message": "Post updated successfully",
@@ -391,27 +383,13 @@ def posttags():
                 "hashtags": hashtags
             }), 200
 
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-    
-    # GET request - return existing hashtags and media
-    try:
-        hashtags = []
-        if os.path.exists(filename):
-            with open(filename, 'r') as f:
-                hashtags = [line.strip() for line in f if line.strip()]
-
-        media_url = aws_service.get_post_image()
-        if not media_url:
-            return jsonify({"error": "Failed to get media URL"}), 500
-        
-        return jsonify({
-            "hashtags": hashtags,
-            "media": media_url
-        }), 200
-        
+        # GET request
+        settings = aws_service.get_post_settings(company_email)
+        return jsonify(settings), 200
+            
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print(f"Error in posttags endpoint: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
 
 @application.route('/api/media/download/<encoded_key>')
 def download_media(encoded_key):
@@ -488,6 +466,8 @@ def signup_company():
         # Save company to DynamoDB
         aws_service.put_item(aws_service.companies_table, company_data)
         
+        aws_service.init_links(name, website)
+        
         # Generate JWT token
         token = jwt.encode(
             {
@@ -511,6 +491,130 @@ def signup_company():
     except Exception as e:
         print(f"Error in company signup: {str(e)}")
         return jsonify({"error": "Failed to create company account"}), 500
+
+@application.route('/api/signup/<company_name>/<token>', methods=['GET'])
+def customer_signup_page(company_name, token):
+    try:
+        # First check if token exists and is already used
+        if aws_service.token_exists(token):
+            # If token exists, redirect to signup page - the frontend will handle showing the error
+            redirect_url = f"http://localhost:5173/signup?company={company_name}&token={token}"
+            return redirect(redirect_url)
+            
+        # Token doesn't exist, create it
+        if not aws_service.create_signup_token(company_name, token):
+            return jsonify({"error": "Failed to create signup token"}), 500
+            
+        # Redirect to the signup page
+        redirect_url = f"http://localhost:5173/signup?company={company_name}&token={token}"
+        return redirect(redirect_url)
+    except Exception as e:
+        print(f"Error in signup flow: {str(e)}")
+        return jsonify({"error": "An error occurred during signup"}), 500
+
+@application.route('/api/validate-token', methods=['POST'])
+def validate_token():
+    try:
+        data = request.get_json()
+        company_name = data.get('company_name')
+        token = data.get('token')
+
+        if not all([company_name, token]):
+            return jsonify({"error": "Company name and token are required"}), 400
+
+        # Clean company name
+        company_name = company_name.replace("-", " ")
+
+        # Check if company exists
+        company = aws_service.get_company_by_name(company_name)
+        if not company:
+            return jsonify({"error": "Invalid company"}), 404
+
+        # Check if token is valid
+        if not aws_service.check_token_validity(company_name, token):
+            return jsonify({"error": "This signup link has expired or has already been used. Please request a new link from your company."}), 400
+
+        return jsonify({"message": "Token is valid"}), 200
+
+    except Exception as e:
+        print(f"Error validating token: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
+
+@application.route('/api/customer/signup', methods=['POST'])
+def customer_signup():
+    try:
+        data = request.get_json()
+        email = data.get('email').lower()
+        password = data.get('password')
+        name = data.get('name')
+        company_name = data.get('company_name')
+        token = data.get('token')
+        
+        # Clean company name
+        company_name = company_name.replace("-", " ")
+
+        if not all([email, password, name, company_name, token]):
+            return jsonify({"error": "All fields are required"}), 400
+
+        # Check if company exists
+        company = aws_service.get_company_by_name(company_name)
+        if not company:
+            return jsonify({"error": "Invalid company"}), 404
+
+        # Get company email from company data
+        company_email = company['email']
+        if not company_email:
+            return jsonify({"error": "Invalid company data"}), 500
+
+        # Validate and use token
+        if not aws_service.validate_and_use_signup_token(company_name, token):
+            return jsonify({"error": "Invalid or expired signup link"}), 400
+
+        # Check if user already exists
+        existing_user = aws_service.get_user(email)
+        if existing_user:
+            return jsonify({"error": "User already exists"}), 400
+
+        # Create user
+        user_data = {
+            'email': email,
+            'password': generate_password_hash(password),
+            'name': name,
+            'company_name': company_name,
+            'company_email': company_email,
+            'created_at': datetime.now().isoformat(),
+            'terms_accepted': False,
+            'friends': [],
+            'referrals_score': [],
+            'total_referrals': 0
+        }
+        
+        if not aws_service.create_user(user_data):
+            return jsonify({"error": "Failed to create user"}), 500
+        
+        # remove signup token after use
+        aws_service.remove_signup_token(company_name, token)
+
+        return jsonify({"message": "User created successfully"}), 201
+
+    except Exception as e:
+        print(f"Error in customer signup: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
+    
+
+@application.route('/api/get-company-name', methods=['GET'])
+def get_company_name():
+    try:
+        email = request.args.get('email')
+        if not email:
+            return jsonify({"error": "Email is required"}), 400
+        company = aws_service.get_company_by_user_email(email)
+        if not company:
+            return jsonify({"error": "Company not found"}), 404
+        return jsonify({"company_name": company.get('name'), "company_email": company.get('email')}), 200
+    except Exception as e:
+        print(f"Error in get company name: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
 
 @application.route('/')
 def index():
