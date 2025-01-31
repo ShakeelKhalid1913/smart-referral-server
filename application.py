@@ -16,7 +16,7 @@ application.config['SECRET_KEY'] = 'your-secret-key'
 # Configure CORS
 CORS(application,
      supports_credentials=True,
-     origins=["https://smartreferralhub.com", "http://localhost:5173"],
+     origins=["https://app.smartreferralhub.com", "http://localhost:5173"],
      allow_headers=["Content-Type", "Authorization"],
      methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
      expose_headers=["Content-Type", "Authorization"],
