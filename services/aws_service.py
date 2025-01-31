@@ -274,6 +274,34 @@ class AWSService:
         except Exception as e:
             print(f"Error getting company by name: {str(e)}")
             return None
+    
+    def get_company_by_email(self, email):
+        try:
+            response = self.dynamodb.get_item(
+                TableName=self.companies_table,
+                Key={'email': {'S': email}}
+            )
+            
+            if 'Item' in response and 'company_name' in response['Item']:
+                company_name = response['Item']['company_name']['S']
+                return self.get_company_by_name(company_name)
+            return None
+        except Exception as e:
+            print(f"Error getting company by email: {str(e)}")
+            return None
+            
+    def get_post_image(self):
+        try:
+            response = self.s3.list_objects_v2(Bucket=self.bucket_name)
+            if 'Contents' in response:
+                for item in response['Contents']:
+                    key = item['Key']
+                    if key.endswith('.png') or key.endswith('.jpg') or key.endswith('.jpeg'):
+                        return key
+            return None
+        except Exception as e:
+            print(f"Error getting post image: {str(e)}")
+            return None
         
     def get_company_by_user_email(self, email):
         try:
