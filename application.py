@@ -193,6 +193,11 @@ def submit():
         if not aws_service.update_user_friends(user_email, friends):
             return jsonify({"error": "Failed to update friends list"}), 500
         
+        # Get total referrals
+        total_referrals = aws_service.get_total_referrals(user_email)
+        
+        aws_service.update_form_approval_status(user_email, total_referrals, False, "Not approved by the company yet.")
+        
         return jsonify({
             "message": "Form submitted successfully"
         }), 200
@@ -492,53 +497,53 @@ def signup_company():
         print(f"Error in company signup: {str(e)}")
         return jsonify({"error": "Failed to create company account"}), 500
 
-@application.route('/api/signup/<company_name>/<token>', methods=['GET'])
-def customer_signup_page(company_name, token):
+@application.route('/api/signup/<company_name>', methods=['GET'])
+def customer_signup_page(company_name):
     try:
         # First check if token exists and is already used
-        if aws_service.token_exists(token):
-            # If token exists, redirect to signup page - the frontend will handle showing the error
-            redirect_url = f"http://localhost:5173/signup?company={company_name}&token={token}"
-            return redirect(redirect_url)
+        # if aws_service.token_exists(token):
+        #     # If token exists, redirect to signup page - the frontend will handle showing the error
+        #     redirect_url = f"http://localhost:5173/signup?company={company_name}&token={token}"
+        #     return redirect(redirect_url)
             
         # Token doesn't exist, create it
-        if not aws_service.create_signup_token(company_name, token):
-            return jsonify({"error": "Failed to create signup token"}), 500
+        # if not aws_service.create_signup_token(company_name, token):
+        #     return jsonify({"error": "Failed to create signup token"}), 500
             
         # Redirect to the signup page
-        redirect_url = f"http://localhost:5173/signup?company={company_name}&token={token}"
+        redirect_url = f"http://localhost:5173/signup?company={company_name}"
         return redirect(redirect_url)
     except Exception as e:
         print(f"Error in signup flow: {str(e)}")
         return jsonify({"error": "An error occurred during signup"}), 500
 
-@application.route('/api/validate-token', methods=['POST'])
-def validate_token():
-    try:
-        data = request.get_json()
-        company_name = data.get('company_name')
-        token = data.get('token')
+# @application.route('/api/validate-token', methods=['POST'])
+# def validate_token():
+#     try:
+#         data = request.get_json()
+#         company_name = data.get('company_name')
+#         token = data.get('token')
 
-        if not all([company_name, token]):
-            return jsonify({"error": "Company name and token are required"}), 400
+#         if not all([company_name, token]):
+#             return jsonify({"error": "Company name and token are required"}), 400
 
-        # Clean company name
-        company_name = company_name.replace("-", " ")
+#         # Clean company name
+#         company_name = company_name.replace("-", " ")
 
-        # Check if company exists
-        company = aws_service.get_company_by_name(company_name)
-        if not company:
-            return jsonify({"error": "Invalid company"}), 404
+#         # Check if company exists
+#         company = aws_service.get_company_by_name(company_name)
+#         if not company:
+#             return jsonify({"error": "Invalid company"}), 404
 
-        # Check if token is valid
-        if not aws_service.check_token_validity(company_name, token):
-            return jsonify({"error": "This signup link has expired or has already been used. Please request a new link from your company."}), 400
+#         # Check if token is valid
+#         if not aws_service.check_token_validity(company_name, token):
+#             return jsonify({"error": "This signup link has expired or has already been used. Please request a new link from your company."}), 400
 
-        return jsonify({"message": "Token is valid"}), 200
+#         return jsonify({"message": "Token is valid"}), 200
 
-    except Exception as e:
-        print(f"Error validating token: {str(e)}")
-        return jsonify({"error": "Internal server error"}), 500
+#     except Exception as e:
+#         print(f"Error validating token: {str(e)}")
+#         return jsonify({"error": "Internal server error"}), 500
 
 @application.route('/api/customer/signup', methods=['POST'])
 def customer_signup():
@@ -548,12 +553,12 @@ def customer_signup():
         password = data.get('password')
         name = data.get('name')
         company_name = data.get('company_name')
-        token = data.get('token')
+        # token = data.get('token')
         
         # Clean company name
         company_name = company_name.replace("-", " ")
 
-        if not all([email, password, name, company_name, token]):
+        if not all([email, password, name, company_name]):
             return jsonify({"error": "All fields are required"}), 400
 
         # Check if company exists
@@ -566,9 +571,9 @@ def customer_signup():
         if not company_email:
             return jsonify({"error": "Invalid company data"}), 500
 
-        # Validate and use token
-        if not aws_service.validate_and_use_signup_token(company_name, token):
-            return jsonify({"error": "Invalid or expired signup link"}), 400
+        # # Validate and use token
+        # if not aws_service.validate_and_use_signup_token(company_name, token):
+        #     return jsonify({"error": "Invalid or expired signup link"}), 400
 
         # Check if user already exists
         existing_user = aws_service.get_user(email)
@@ -593,7 +598,7 @@ def customer_signup():
             return jsonify({"error": "Failed to create user"}), 500
         
         # remove signup token after use
-        aws_service.remove_signup_token(company_name, token)
+        # aws_service.remove_signup_token(company_name, token)
 
         return jsonify({"message": "User created successfully"}), 201
 
@@ -615,6 +620,58 @@ def get_company_name():
     except Exception as e:
         print(f"Error in get company name: {str(e)}")
         return jsonify({"error": "Internal server error"}), 500
+
+
+
+@application.route('/api/approve-form', methods=['POST'])
+@login_required
+def approve_form():
+    """Endpoint to approve or disapprove a form submission"""
+    try:
+        # Get data from request
+        data = request.get_json()
+        email = data.get('email')
+        form_number = data.get('formNumber')
+        is_approved = data.get('isApproved')
+        reason = data.get('reason', '')
+
+        # Validate required fields
+        if not all([email, isinstance(form_number, int), isinstance(is_approved, bool)]):
+            return jsonify({"error": "Missing or invalid required fields"}), 400
+
+        # If disapproving, reason is required
+        if not is_approved and not reason:
+            return jsonify({"error": "Reason is required for disapproval"}), 400
+
+        # Get the current user (company) from the request
+        current_user = get_user_from_request()
+        if not current_user:
+            return jsonify({"error": "Unauthorized"}), 401
+
+        # Update form approval status
+        success = aws_service.update_form_approval_status(
+            user_email=email,
+            form_number=form_number,
+            is_approved=is_approved,
+            reason=reason
+        )
+
+        if not success:
+            return jsonify({"error": "Failed to update form status"}), 500
+
+        return jsonify({
+            "message": f"Form {'approved' if is_approved else 'disapproved'} successfully",
+            "status": {
+                "is_approved": is_approved,
+                "reason": reason,
+                "updated_at": datetime.now().isoformat()
+            }
+        }), 200
+
+    except Exception as e:
+        print(f"Error in approve form: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
+
 
 @application.route('/')
 def index():
