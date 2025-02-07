@@ -497,25 +497,25 @@ def signup_company():
         print(f"Error in company signup: {str(e)}")
         return jsonify({"error": "Failed to create company account"}), 500
 
-@application.route('/api/signup/<company_name>', methods=['GET'])
-def customer_signup_page(company_name):
-    try:
-        # First check if token exists and is already used
-        # if aws_service.token_exists(token):
-        #     # If token exists, redirect to signup page - the frontend will handle showing the error
-        #     redirect_url = f"http://localhost:5173/signup?company={company_name}&token={token}"
-        #     return redirect(redirect_url)
+# @application.route('/api/signup/<company_name>', methods=['GET'])
+# def customer_signup_page(company_name):
+#     try:
+#         # First check if token exists and is already used
+#         # if aws_service.token_exists(token):
+#         #     # If token exists, redirect to signup page - the frontend will handle showing the error
+#         #     redirect_url = f"http://localhost:5173/signup?company={company_name}&token={token}"
+#         #     return redirect(redirect_url)
             
-        # Token doesn't exist, create it
-        # if not aws_service.create_signup_token(company_name, token):
-        #     return jsonify({"error": "Failed to create signup token"}), 500
+#         # Token doesn't exist, create it
+#         # if not aws_service.create_signup_token(company_name, token):
+#         #     return jsonify({"error": "Failed to create signup token"}), 500
             
-        # Redirect to the signup page
-        redirect_url = f"http://localhost:5173/signup?company={company_name}"
-        return redirect(redirect_url)
-    except Exception as e:
-        print(f"Error in signup flow: {str(e)}")
-        return jsonify({"error": "An error occurred during signup"}), 500
+#         # Redirect to the signup page
+#         redirect_url = f"http://localhost:5173/signup?company={company_name}"
+#         return redirect(redirect_url)
+#     except Exception as e:
+#         print(f"Error in signup flow: {str(e)}")
+#         return jsonify({"error": "An error occurred during signup"}), 500
 
 # @application.route('/api/validate-token', methods=['POST'])
 # def validate_token():
@@ -607,6 +607,7 @@ def customer_signup():
         return jsonify({"error": "Internal server error"}), 500
     
 
+# get company in which user is logged in
 @application.route('/api/get-company-name', methods=['GET'])
 def get_company_name():
     try:
@@ -621,7 +622,20 @@ def get_company_name():
         print(f"Error in get company name: {str(e)}")
         return jsonify({"error": "Internal server error"}), 500
 
+@application.route('/api/company-exists', methods=["POST"])
+def company_exists():
+    try:
+        company_name = request.args.get('company_name')
 
+        if not company_name:
+            return jsonify({"error": "Company name is required"}), 400
+        company = aws_service.get_company_by_name(company_name)
+        if not company:
+            return jsonify({"exists": False}), 200
+        return jsonify({"exists": True}), 200
+    except Exception as e:
+        print(f"Error in company exists: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
 
 @application.route('/api/approve-form', methods=['POST'])
 @login_required
