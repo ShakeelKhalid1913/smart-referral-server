@@ -164,30 +164,6 @@ class AWSService:
                 }
             )
 
-    # def _create_signup_tokens_table_if_not_exists(self):
-    #     """Create the signup tokens table if it doesn't exist"""
-    #     try:
-    #         self.dynamodb.describe_table(TableName=self.signup_tokens_table)
-    #     except self.dynamodb.exceptions.ResourceNotFoundException:
-    #         print(f"Creating signup tokens table: {self.signup_tokens_table}")
-    #         self.dynamodb.create_table(
-    #             TableName=self.signup_tokens_table,
-    #             KeySchema=[
-    #                 {'AttributeName': 'token', 'KeyType': 'HASH'}
-    #             ],
-    #             AttributeDefinitions=[
-    #                 {'AttributeName': 'token', 'AttributeType': 'S'}
-    #             ],
-    #             ProvisionedThroughput={
-    #                 'ReadCapacityUnits': 5,
-    #                 'WriteCapacityUnits': 5
-    #             }
-    #         )
-    #         # Wait for the table to be created
-    #         waiter = self.dynamodb.get_waiter('table_exists')
-    #         waiter.wait(TableName=self.signup_tokens_table)
-    #         print(f"Signup tokens table created: {self.signup_tokens_table}")
-
     def _create_form_approvals_table_if_not_exists(self):
         """Create the form approvals table if it doesn't exist"""
         try:
@@ -951,112 +927,7 @@ class AWSService:
                 'hashtags': [],
                 'media': None
             }
-
-    # def token_exists(self, token: str) -> bool:
-    #     """Check if a token exists in the database"""
-    #     try:
-    #         response = self.dynamodb.get_item(
-    #             TableName=self.signup_tokens_table,
-    #             Key={'token': {'S': token}}
-    #         )
-    #         return 'Item' in response
-    #     except Exception as e:
-    #         print(f"Error checking token existence: {str(e)}")
-    #         return False
-
-    # def create_signup_token(self, company_name: str, token: str) -> bool:
-    #     """Create a new signup token"""
-    #     try:
-    #         # Create new token
-    #         self.dynamodb.put_item(
-    #             TableName=self.signup_tokens_table,
-    #             Item={
-    #                 'token': {'S': token},
-    #                 'company_name': {'S': company_name.replace("-", " ")},
-    #                 'created_at': {'S': datetime.now().isoformat()},
-    #                 'used': {'BOOL': False}
-    #             }
-    #         )
-    #         print(f"Created signup token: {token} for company: {company_name}")
-    #         return True
-    #     except Exception as e:
-    #         print(f"Error creating signup token: {str(e)}")
-    #         return False
-
-    # def check_token_validity(self, company_name: str, token: str) -> bool:
-    #     """Check if a token is valid and unused without marking it as used"""
-    #     try:
-    #         # Get the token
-    #         response = self.dynamodb.get_item(
-    #             TableName=self.signup_tokens_table,
-    #             Key={'token': {'S': token}}
-    #         )
-            
-    #         # Check if token exists and matches company exactly
-    #         if 'Item' not in response:
-    #             print(f"Token not found: {token}")
-    #             return False
-                
-    #         token_data = response['Item']
-            
-    #         # Clean company names for exact comparison
-    #         db_company = token_data['company_name']['S'].strip().lower()
-    #         input_company = company_name.replace("-", " ").strip().lower()
-            
-    #         # Check if token is expired (10 minutes)
-    #         created_at = datetime.fromisoformat(token_data['created_at']['S'])
-    #         now = datetime.now()
-    #         time_diff = (now - created_at).total_seconds()
-    #         is_expired = time_diff > 600  # 10 minutes = 600 seconds
-            
-    #         company_match = db_company == input_company
-    #         is_unused = not token_data['used']['BOOL']
-            
-    #         if not company_match:
-    #             print(f"Company mismatch. Expected: {db_company}, Got: {input_company}")
-    #         if not is_unused:
-    #             print(f"Token already used: {token}")
-    #         if is_expired:
-    #             print(f"Token expired. Created at: {created_at}, Now: {now}, Time diff: {time_diff} seconds")
-                
-    #         return company_match and is_unused and not is_expired
-    #     except Exception as e:
-    #         print(f"Error checking token validity: {str(e)}")
-    #         return False
-
-    # def validate_and_use_signup_token(self, company_name: str, token: str) -> bool:
-    #     """Validate a signup token and mark it as used if valid"""
-    #     try:
-    #         # First check if token is valid
-    #         if not self.check_token_validity(company_name, token):
-    #             return False
-            
-    #         # Mark token as used
-    #         self.dynamodb.update_item(
-    #             TableName=self.signup_tokens_table,
-    #             Key={'token': {'S': token}},
-    #             UpdateExpression='SET used = :used',
-    #             ExpressionAttributeValues={':used': {'BOOL': True}}
-    #         )
-    #         print(f"Marked token as used: {token}")
-    #         return True
-    #     except Exception as e:
-    #         print(f"Error validating signup token: {str(e)}")
-    #         return False
-        
-    # def remove_signup_token(self, company_name: str, token: str) -> bool:
-    #     """Remove a signup token from the database"""
-    #     try:
-    #         self.dynamodb.delete_item(
-    #             TableName=self.signup_tokens_table,
-    #             Key={'token': {'S': token}}
-    #         )
-    #         print(f"Deleted used token: {token}")
-    #         return True
-    #     except Exception as e:
-    #         print(f"Error deleting token: {str(e)}")
-    #         return False
-    
+  
     def init_links(self, company_name: str, company_web: str):
         # Initial links data
         initial_links = [

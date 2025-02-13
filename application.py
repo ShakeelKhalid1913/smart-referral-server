@@ -5,13 +5,15 @@ from werkzeug.security import check_password_hash, generate_password_hash
 import json
 from datetime import datetime, timedelta
 import jwt
-
 from utils.auth import generate_token, login_required, get_user_from_request
 from services.aws_service import AWSService
 
 # Initialize Flask app
 application = Flask(__name__)
 application.config['SECRET_KEY'] = 'your-secret-key'
+application.config['RECAPTCHA_SECRET_KEY'] = os.environ.get('RECAPTCHA_SECRET_KEY')
+
+google_captcha_url = "https://www.google.com/recaptcha/api/siteverify"
 
 # Configure CORS
 CORS(application,
@@ -497,54 +499,6 @@ def signup_company():
         print(f"Error in company signup: {str(e)}")
         return jsonify({"error": "Failed to create company account"}), 500
 
-# @application.route('/api/signup/<company_name>', methods=['GET'])
-# def customer_signup_page(company_name):
-#     try:
-#         # First check if token exists and is already used
-#         # if aws_service.token_exists(token):
-#         #     # If token exists, redirect to signup page - the frontend will handle showing the error
-#         #     redirect_url = f"http://localhost:5173/signup?company={company_name}&token={token}"
-#         #     return redirect(redirect_url)
-            
-#         # Token doesn't exist, create it
-#         # if not aws_service.create_signup_token(company_name, token):
-#         #     return jsonify({"error": "Failed to create signup token"}), 500
-            
-#         # Redirect to the signup page
-#         redirect_url = f"http://localhost:5173/signup?company={company_name}"
-#         return redirect(redirect_url)
-#     except Exception as e:
-#         print(f"Error in signup flow: {str(e)}")
-#         return jsonify({"error": "An error occurred during signup"}), 500
-
-# @application.route('/api/validate-token', methods=['POST'])
-# def validate_token():
-#     try:
-#         data = request.get_json()
-#         company_name = data.get('company_name')
-#         token = data.get('token')
-
-#         if not all([company_name, token]):
-#             return jsonify({"error": "Company name and token are required"}), 400
-
-#         # Clean company name
-#         company_name = company_name.replace("-", " ")
-
-#         # Check if company exists
-#         company = aws_service.get_company_by_name(company_name)
-#         if not company:
-#             return jsonify({"error": "Invalid company"}), 404
-
-#         # Check if token is valid
-#         if not aws_service.check_token_validity(company_name, token):
-#             return jsonify({"error": "This signup link has expired or has already been used. Please request a new link from your company."}), 400
-
-#         return jsonify({"message": "Token is valid"}), 200
-
-#     except Exception as e:
-#         print(f"Error validating token: {str(e)}")
-#         return jsonify({"error": "Internal server error"}), 500
-
 @application.route('/api/customer/signup', methods=['POST'])
 def customer_signup():
     try:
@@ -553,7 +507,21 @@ def customer_signup():
         password = data.get('password')
         name = data.get('name')
         company_name = data.get('company_name')
-        # token = data.get('token')
+        recaptcha_token = data.get('token')
+        
+        import requests
+        
+        # Verify recaptcha
+        response = requests.post(
+            google_captcha_url,
+            data={
+                "secret": application.config['RECAPTCHA_SECRET_KEY'],
+                "response": recaptcha_token
+            }
+        )
+        print(response.json())
+        if not response.json().get('success'):
+            return jsonify({"error": "Invalid recaptcha"}), 400
         
         # Clean company name
         company_name = company_name.replace("-", " ")
@@ -570,10 +538,6 @@ def customer_signup():
         company_email = company['email']
         if not company_email:
             return jsonify({"error": "Invalid company data"}), 500
-
-        # # Validate and use token
-        # if not aws_service.validate_and_use_signup_token(company_name, token):
-        #     return jsonify({"error": "Invalid or expired signup link"}), 400
 
         # Check if user already exists
         existing_user = aws_service.get_user(email)
@@ -596,9 +560,6 @@ def customer_signup():
         
         if not aws_service.create_user(user_data):
             return jsonify({"error": "Failed to create user"}), 500
-        
-        # remove signup token after use
-        # aws_service.remove_signup_token(company_name, token)
 
         return jsonify({"message": "User created successfully"}), 201
 
