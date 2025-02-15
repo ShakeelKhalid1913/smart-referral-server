@@ -118,22 +118,6 @@ class AWSService:
                 ],
                 AttributeDefinitions=[
                     {'AttributeName': 'email', 'AttributeType': 'S'},
-                    {'AttributeName': 'subscription_status', 'AttributeType': 'S'}
-                ],
-                GlobalSecondaryIndexes=[
-                    {
-                        'IndexName': 'SubscriptionStatusIndex',
-                        'KeySchema': [
-                            {'AttributeName': 'subscription_status', 'KeyType': 'HASH'}
-                        ],
-                        'Projection': {
-                            'ProjectionType': 'ALL'
-                        },
-                        'ProvisionedThroughput': {
-                            'ReadCapacityUnits': 5,
-                            'WriteCapacityUnits': 5
-                        }
-                    }
                 ],
                 ProvisionedThroughput={
                     'ReadCapacityUnits': 5,
@@ -151,7 +135,6 @@ class AWSService:
                 TableName=self.companies_table,
                 Item={
                     'email': {'S': 'default'},
-                    'subscription_status': {'S': 'default'},
                     'discount': {
                         'M': {
                             'limit': {'N': '100'},
@@ -747,6 +730,13 @@ class AWSService:
                     dynamodb_item[k] = {'N': str(v)}
                 else:
                     dynamodb_item[k] = {'S': str(v)}
+            
+            # if table is company add limit and discount
+            if table_name == self.companies_table:
+                dynamodb_item['discount'] = {'M': {
+                    'limit': {'N': '100'},
+                    'multiplier': {'N': '0.3'}
+                }} 
 
             self.dynamodb.put_item(
                 TableName=table_name,

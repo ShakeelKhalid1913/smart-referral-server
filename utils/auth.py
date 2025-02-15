@@ -20,10 +20,19 @@ def get_user_from_request():
         
         token = auth_header.split(' ')[1]  # Bearer <token>
         payload = jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=['HS256'])
+
         return payload.get('email')
     except Exception as e:
-        print(f"Auth error: {str(e)}")
-        return None
+        # check if it company
+        import requests
+        res = requests.get(f"https://smartreferralhub.com/?rest_route=/simple-jwt-login/v1/auth/validate&JWT={token}")
+        
+        if not res.ok:
+            return None
+        
+        payload = res.json()
+        
+        return payload.get('success')
 
 def login_required(f):
     """Decorator to protect routes that require authentication"""
