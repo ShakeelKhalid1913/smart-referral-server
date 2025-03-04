@@ -478,7 +478,7 @@ def customer_signup():
             return jsonify({"error": "Invalid recaptcha"}), 400
         
         # Clean company name
-        company_name = company_name.replace("-", " ")
+        # company_name = company_name.replace("-", " ")
 
         if not all([email, password, name, company_name]):
             return jsonify({"error": "All fields are required"}), 400

@@ -182,13 +182,17 @@ class AWSService:
             unique_filename += os.path.splitext(original_filename)[1]
             content_type = file.content_type
             
-            # check user_email is company_email
-            company_email = self.get_company_by_email(user_email)
-            
-            # if user_email is "admin" then file name will be "post"
-            if company_email is not None:
+            # check user_email is company_email            
+            if(self.get_company_by_email(user_email)):
                 file_type = "post"
                 unique_filename = f"post{os.path.splitext(original_filename)[1]}"
+                
+                # before putting remove all objects in the directory
+                response = self.s3_client.list_objects_v2(Bucket=self.bucket_name, Prefix=f"{user_email}/{file_type}/")
+                if 'Contents' in response and len(response['Contents']) > 0:
+                    # print all contents 
+                    for obj in response['Contents']:
+                        self.s3_client.delete_object(Bucket=self.bucket_name, Key=obj['Key'])
                 
                 self.s3_client.put_object(
                     Bucket=self.bucket_name,
@@ -218,6 +222,21 @@ class AWSService:
         except Exception as e:
             print(f"Error uploading file to S3: {str(e)}")
             return None, None
+    
+    # get companies email
+    def get_all_companies_emails(self):
+        """Get all company emails from DynamoDB
+        
+        Returns:
+            list: List of company emails
+        """
+        try:
+            response = self.dynamodb.scan(TableName=self.companies_table)
+            emails = [item['email']['S'] for item in response['Items']]
+            return emails
+        except Exception as e:
+            print(f"Error getting all companies emails: {str(e)}")
+            return []
     
     def get_company_by_name(self, company_name):
         """Get company details from DynamoDB by company name
@@ -263,9 +282,8 @@ class AWSService:
                 Key={'email': {'S': email}}
             )
             
-            if 'Item' in response and 'company_name' in response['Item']:
-                company_name = response['Item']['company_name']['S']
-                return self.get_company_by_name(company_name)
+            if response:
+                return response['Item']
             return None
         except Exception as e:
             print(f"Error getting company by email: {str(e)}")
