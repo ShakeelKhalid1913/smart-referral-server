@@ -379,6 +379,48 @@ def posttags():
         print(f"Error in posttags endpoint: {str(e)}")
         return jsonify({"error": "Internal server error"}), 500
 
+@application.route('/api/posttags', methods=['DELETE'])
+@login_required
+def delete_post():
+    company_email = request.args.get('company_email')
+    if not company_email:
+        return jsonify({'error': 'Company email is required'}), 400
+    
+    try:
+        # Check if the company exists
+        company = aws_service.get_company_by_email(company_email)
+        if not company:
+            return jsonify({'error': 'Company not found'}), 404
+        
+        # Delete the post from S3
+        # List objects in the company's post directory to find files to delete
+        response = aws_service.s3_client.list_objects_v2(
+            Bucket=aws_service.bucket_name,
+            Prefix=f"{company_email}/post/"
+        )
+        
+        # Delete any files found
+        if 'Contents' in response:
+            for obj in response['Contents']:
+                aws_service.s3_client.delete_object(
+                    Bucket=aws_service.bucket_name,
+                    Key=obj['Key']
+                )
+        
+        # Clear the hashtags in DynamoDB
+        aws_service.update_company_settings(company_email, {
+            'hashtags': []  # Empty list to clear hashtags
+        })
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Post deleted successfully'
+        })
+        
+    except Exception as e:
+        print(f"Error deleting post: {str(e)}")
+        return jsonify({'error': 'Failed to delete post'}), 500
+
 @application.route('/api/media/download/<encoded_key>')
 def download_media(encoded_key):
     try:
@@ -600,6 +642,7 @@ def approve_form():
     except Exception as e:
         print(f"Error in approve form: {str(e)}")
         return jsonify({"error": "Internal server error"}), 500
+
 
 
 @application.route('/')
