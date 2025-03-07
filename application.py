@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 import jwt
 from utils.auth import generate_token, login_required, get_user_from_request
 from services.aws_service import AWSService
+from dotenv import load_dotenv
+load_dotenv()  # Add this line at the top after imports
 
 # Initialize Flask app
 application = Flask(__name__)
@@ -263,12 +265,23 @@ def update_link():
         step_name = data.get('step_name')
         platform = data.get('platform')
         new_link = data.get('link')
+        new_platform = data.get('new_platform')
 
         if not all([step_name, platform, new_link]):
             return jsonify({"error": "Missing required fields"}), 400
 
-        if aws_service.update_link(company_name, step_name.lower(), platform.lower(), new_link):
-            return jsonify({"message": "Link updated successfully"}), 200
+        try:
+            if aws_service.update_link(
+                company_name, 
+                step_name.lower(), 
+                platform.lower(), 
+                new_link, 
+                new_platform.lower() if new_platform else None
+            ):
+                return jsonify({"message": "Link updated successfully"}), 200
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
         return jsonify({"error": "Failed to update link"}), 500
 
     except Exception as e:
@@ -643,7 +656,27 @@ def approve_form():
         print(f"Error in approve form: {str(e)}")
         return jsonify({"error": "Internal server error"}), 500
 
-
+@application.route('/api/links/check-platform', methods=['GET'])
+def check_platform_exists():
+    try:
+        company_name = request.args.get('company_name')
+        platform = request.args.get('platform')
+        current_step = request.args.get('current_step')
+        
+        if not all([company_name, platform, current_step]):
+            return jsonify({"error": "Missing required parameters"}), 400
+            
+        # Check if platform exists in any other step
+        exists = aws_service.check_platform_exists(company_name, platform.lower(), current_step)
+        
+        return jsonify({
+            "exists": exists,
+            "message": "Platform already exists" if exists else "Platform available"
+        }), 200
+        
+    except Exception as e:
+        print(f"Error checking platform: {str(e)}")
+        return jsonify({"error": "Failed to check platform"}), 500
 
 @application.route('/')
 def index():

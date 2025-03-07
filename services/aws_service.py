@@ -7,10 +7,14 @@ from werkzeug.security import generate_password_hash
 
 class AWSService:
     def __init__(self):
-        self.aws_access_key_id = os.environ.get('aws_access_key_id')
-        self.aws_secret_access_key = os.environ.get('aws_secret_access_key')
+        # Update variable names to match .env file
+        self.aws_access_key_id = os.environ.get('AWS_ACCESS_KEY_ID')
+        self.aws_secret_access_key = os.environ.get('AWS_SECRET_ACCESS_KEY')
         
-        # Initialize S3 client
+        if not self.aws_access_key_id or not self.aws_secret_access_key:
+            raise ValueError("AWS credentials not found in environment variables")
+            
+        # Rest of initialization...
         self.s3_client = boto3.client(
             's3',
             region_name='us-west-1',
@@ -18,7 +22,6 @@ class AWSService:
             aws_secret_access_key=self.aws_secret_access_key
         )
         
-        # Initialize DynamoDB client
         self.dynamodb = boto3.client(
             'dynamodb',
             region_name='us-west-1',
@@ -552,27 +555,48 @@ class AWSService:
             print(f"Error getting links: {str(e)}")
             return []
 
-    def update_link(self, company_name: str, step_name: str, platform: str, new_link: str):
-        """Update a specific link"""
+    def update_link(self, company_name: str, step_name: str, platform: str, new_link: str, new_platform: str = None):
+        """Update a link and optionally rename its platform"""
         try:
-            # Construct the id key with company_name, step_name, and platform
-            id_key = f"{company_name}#{step_name}#{platform}"
-            
-            # Perform the update operation
-            self.dynamodb.update_item(
-                TableName=self.links_table,
-                Key={
-                    'id': {'S': id_key}  # Update the id key with the new format
-                },
-                UpdateExpression='SET #link = :link',
-                ExpressionAttributeNames={
-                    '#link': 'link'  # Map 'link' to avoid reserved keywords
-                },
-                ExpressionAttributeValues={
-                    ':link': {'S': new_link}  # Bind the new link value
-                }
-            )
+            # Check if platform already exists in the same step
+            if new_platform and self.check_platform_exists(company_name, new_platform, step_name):
+                raise ValueError("Platform already exists in this step")
+
+            # Old item key
+            old_id = f"{company_name}#{step_name}#{platform}"
+
+            if new_platform:
+                # Delete old item
+                self.dynamodb.delete_item(
+                    TableName=self.links_table,
+                    Key={'id': {'S': old_id}}
+                )
+
+                # Create new item with new platform
+                new_id = f"{company_name}#{step_name}#{new_platform}"
+                self.dynamodb.put_item(
+                    TableName=self.links_table,
+                    Item={
+                        'id': {'S': new_id},
+                        'step_name': {'S': step_name},
+                        'platform': {'S': new_platform},
+                        'link': {'S': new_link},
+                        'created_at': {'N': str(int(datetime.now().timestamp()))}
+                    }
+                )
+            else:
+                # Just update the link
+                self.dynamodb.update_item(
+                    TableName=self.links_table,
+                    Key={'id': {'S': old_id}},
+                    UpdateExpression='SET #link = :link',
+                    ExpressionAttributeNames={'#link': 'link'},
+                    ExpressionAttributeValues={':link': {'S': new_link}}
+                )
             return True
+        except ValueError as e:
+            print(f"Validation error: {str(e)}")
+            raise
         except Exception as e:
             print(f"Error updating link: {str(e)}")
             return False
@@ -1069,3 +1093,21 @@ class AWSService:
         except Exception as e:
             print(f"Error getting user form approvals: {str(e)}")
             return []
+
+    def check_platform_exists(self, company_name: str, platform: str, current_step: str) -> bool:
+        """Check if platform exists in any step for this company"""
+        try:
+            # Scan the links table for any matching platform in the same step
+            response = self.dynamodb.scan(
+                TableName=self.links_table,
+                FilterExpression='begins_with(id, :company_prefix) AND contains(id, :platform) AND step_name = :current_step',
+                ExpressionAttributeValues={
+                    ':company_prefix': {'S': f"{company_name}#"},
+                    ':platform': {'S': platform.lower()},
+                    ':current_step': {'S': current_step}
+                }
+            )
+            return len(response.get('Items', [])) > 0
+        except Exception as e:
+            print(f"Error checking platform existence: {str(e)}")
+            return False
