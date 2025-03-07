@@ -437,15 +437,20 @@ def delete_post():
 @application.route('/api/media/download/<encoded_key>')
 def download_media(encoded_key):
     try:
+        # Add error handling for invalid encoded key
+        if not encoded_key:
+            return jsonify({"error": "Invalid key"}), 400
+            
         # Get the download URL from S3
         url = aws_service.get_download_url(encoded_key)
         if not url:
             return jsonify({"error": "File not found"}), 404
             
-        # Redirect to the pre-signed URL
-        return redirect(url)
+        # Return the signed URL
+        return jsonify({"url": url})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print(f"Error in download_media: {str(e)}")
+        return jsonify({"error": "Failed to generate download URL"}), 500
     
 # on form submitted update referrals in user table and referrals score list
 @application.route('/api/update-referrals-numbers', methods=['POST'])

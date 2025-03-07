@@ -355,6 +355,11 @@ class AWSService:
         """Decode the URL-safe string back to S3 key"""
         import base64
         try:
+            # Add padding if needed
+            padding = 4 - (len(encoded_key) % 4)
+            if padding != 4:
+                encoded_key += '=' * padding
+                
             decoded = base64.urlsafe_b64decode(encoded_key.encode()).decode()
             print(f"Decoded key: {encoded_key} -> {decoded}")
             return decoded
@@ -379,7 +384,9 @@ class AWSService:
                 Params={
                     'Bucket': self.bucket_name,
                     'Key': key,
-                    'ResponseContentDisposition': 'attachment'
+                    'ResponseContentDisposition': 'attachment',
+                    # Add ResponseContentType for proper content type handling
+                    'ResponseContentType': self._get_content_type(key)
                 },
                 ExpiresIn=300  # URL expires in 5 minutes
             )
@@ -388,6 +395,20 @@ class AWSService:
         except Exception as e:
             print(f"Error generating download URL: {str(e)}")
             return None
+
+    def _get_content_type(self, key: str) -> str:
+        """Get content type based on file extension"""
+        ext = key.lower().split('.')[-1]
+        content_types = {
+            'jpg': 'image/jpeg',
+            'jpeg': 'image/jpeg',
+            'png': 'image/png',
+            'gif': 'image/gif',
+            'mp4': 'video/mp4',
+            'mov': 'video/quicktime',
+            'avi': 'video/x-msvideo'
+        }
+        return content_types.get(ext, 'application/octet-stream')
 
     def get_user(self, email: str):
         """Get user from DynamoDB"""
@@ -944,7 +965,9 @@ class AWSService:
                 # Get the first image if any exists
                 if 'Contents' in response and len(response['Contents']) > 0:
                     key = response['Contents'][0]['Key']
-                    post_image_url = f"https://{self.bucket_name}.s3.amazonaws.com/{key}"
+                    # Return encoded key instead of direct S3 URL
+                    encoded_key = self.encode_key(key)
+                    post_image_url = f"/media/download/{encoded_key}"
             except Exception as e:
                 print(f"Error getting post image: {str(e)}")
             
@@ -1111,3 +1134,4 @@ class AWSService:
         except Exception as e:
             print(f"Error checking platform existence: {str(e)}")
             return False
+
